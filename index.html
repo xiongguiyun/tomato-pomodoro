@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#f6f7fb">
+<title>🍅 番茄钟</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍅</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar no-print">
+  <div class="brand">
+    <span class="brand-logo">🍅</span>
+    <span class="brand-name">番茄钟</span>
+    <span class="brand-level" id="brandLevel">Lv.1 种子</span>
+  </div>
+  <div class="top-actions">
+    <button class="icon-btn" id="themeBtn" title="切换深色 / 亮色主题 (T)" aria-label="切换主题">🌙</button>
+    <button class="icon-btn" id="statsJumpBtn" title="查看统计" aria-label="查看统计">📊</button>
+    <button class="icon-btn" id="settingsBtn" title="设置" aria-label="设置">⚙️</button>
+  </div>
+</header>
+
+<main class="page">
+
+  <!-- ============ 计时卡片 ============ -->
+  <section class="card timer-card">
+    <div class="mode-bar no-print">
+      <div class="mode-chips jelly-radio" id="modeChips" role="radiogroup" aria-label="专注模式"></div>
+      <button class="chip chip-add" id="addModeBtn" title="添加自定义模式">＋ 模式</button>
+    </div>
+
+    <div class="ring-area">
+      <svg class="ring" viewBox="0 0 320 320" aria-hidden="true">
+        <circle class="ring-track" cx="160" cy="160" r="146"></circle>
+        <circle class="ring-progress" id="ringProgress" cx="160" cy="160" r="146"></circle>
+      </svg>
+      <div class="ring-center">
+        <div class="phase-tag" id="phaseTag">专注</div>
+        <div class="time-text" id="timeText">25:00</div>
+        <div class="mode-sub" id="modeSub">默认 · 25/5 分钟</div>
+        <div class="status-line" id="statusLine">点击开始，进入专注</div>
+      </div>
+    </div>
+
+    <button class="tomato-view-btn no-print" id="tomatoViewBtn" title="只显示番茄 (F)">🍅 只显示番茄</button>
+
+    <div class="controls no-print" id="controls">
+      <button class="btn btn-primary" id="mainBtn">▶ 开始</button>
+      <button class="btn btn-primary hidden" id="resumeBtn">▶ 继续</button>
+      <button class="btn" id="resetBtn" title="重置当前计时 (R)">↺ 重置</button>
+      <button class="btn" id="skipBtn" title="跳过当前阶段 (S)">⏭ 跳过</button>
+      <button class="btn btn-warn" id="interruptBtn" title="被打断，记录一次中断 (I)">⚠ 被打断</button>
+    </div>
+
+    <div class="mini-stats no-print">
+      <div class="mini-item"><span class="mini-ico">🍅</span><span>今日 <b id="miniToday">0</b> 个</span></div>
+      <div class="mini-sep"></div>
+      <div class="mini-item"><span class="mini-ico">🔥</span><span>连击 <b id="miniStreak">0</b> 天</span></div>
+      <div class="mini-sep"></div>
+      <div class="mini-item"><span class="mini-ico">⏱</span><span>今日 <b id="miniTodayTime">0</b></span></div>
+    </div>
+  </section>
+
+  <!-- ============ 等级卡片 ============ -->
+  <section class="card level-card">
+    <div class="level-head">
+      <div class="level-badge" id="levelBadge">1</div>
+      <div class="level-meta">
+        <div class="level-name" id="levelName">种子</div>
+        <div class="level-xp" id="levelXp">0 / 0 XP</div>
+      </div>
+      <div class="level-next" id="levelNext">下一级：破土</div>
+    </div>
+    <div class="level-track"><div class="level-fill" id="levelFill"></div></div>
+
+    <button class="task-toggle" id="taskToggle" aria-expanded="false">
+      <span class="task-toggle-arrow">▸</span> 提升等级的任务
+    </button>
+    <div class="task-panel hidden" id="taskPanel"></div>
+  </section>
+
+  <!-- ============ 统计卡片 ============ -->
+  <section class="card stats-card" id="statsSection">
+    <div class="section-title">📊 专注统计</div>
+
+    <div class="overview-grid">
+      <div class="ov-cell"><div class="ov-num" id="ovTotal">0</div><div class="ov-label">总专注次数</div></div>
+      <div class="ov-cell"><div class="ov-num" id="ovToday">0</div><div class="ov-label">今日专注</div></div>
+      <div class="ov-cell"><div class="ov-num" id="ovWeek">0</div><div class="ov-label">近7天专注</div></div>
+      <div class="ov-cell"><div class="ov-num" id="ovStreak">0</div><div class="ov-label">连续打卡（天）</div></div>
+      <div class="ov-cell"><div class="ov-num" id="ovTime">0分</div><div class="ov-label">专注总时长</div></div>
+      <div class="ov-cell"><div class="ov-num" id="ovInterrupt">0</div><div class="ov-label">总中断次数</div></div>
+    </div>
+
+    <div class="range-tabs no-print rubber-segment" id="rangeTabs" role="radiogroup" aria-label="统计时间范围" data-equal>
+      <button type="button" class="rubber-segment__item" role="radio" aria-checked="true" tabindex="0" data-range="today">今天</button>
+      <button type="button" class="rubber-segment__item" role="radio" aria-checked="false" tabindex="-1" data-range="7d">近7天</button>
+      <button type="button" class="rubber-segment__item" role="radio" aria-checked="false" tabindex="-1" data-range="1m">近1个月</button>
+      <button type="button" class="rubber-segment__item" role="radio" aria-checked="false" tabindex="-1" data-range="6m">近半年</button>
+      <button type="button" class="rubber-segment__item" role="radio" aria-checked="false" tabindex="-1" data-range="1y">近1年</button>
+      <div class="rubber-segment__thumb" aria-hidden="true">
+        <span class="rubber-segment__item rubber-segment__copy">今天</span>
+        <span class="rubber-segment__item rubber-segment__copy">近7天</span>
+        <span class="rubber-segment__item rubber-segment__copy">近1个月</span>
+        <span class="rubber-segment__item rubber-segment__copy">近半年</span>
+        <span class="rubber-segment__item rubber-segment__copy">近1年</span>
+      </div>
+    </div>
+
+    <div class="range-summary">
+      <div class="rs-cell"><div class="rs-num" id="rsCount">0</div><div class="rs-label">专注次数</div></div>
+      <div class="rs-cell"><div class="rs-num" id="rsTime">0分</div><div class="rs-label">专注时长</div></div>
+      <div class="rs-cell"><div class="rs-num" id="rsInterrupt">0</div><div class="rs-label">打断次数</div></div>
+      <div class="rs-cell"><div class="rs-num" id="rsAvg">0</div><div class="rs-label">日均（次）</div></div>
+    </div>
+
+    <div class="chart-wrap">
+      <div class="chart" id="chart"></div>
+      <div class="chart-caption" id="chartCaption">每天专注分钟数</div>
+    </div>
+
+    <div class="section-subtitle">🕘 最近记录</div>
+    <div class="history" id="history"><div class="history-empty">还没有记录，完成一次专注后这里会出现历史 🍅</div></div>
+  </section>
+
+  <footer class="foot no-print">
+    快捷键：<kbd>空格</kbd> 开始/暂停 · <kbd>R</kbd> 重置 · <kbd>S</kbd> 跳过 · <kbd>I</kbd> 被打断 · <kbd>F</kbd> 番茄视图 · <kbd>T</kbd> 主题
+  </footer>
+</main>
+
+<!-- ============ 只显示番茄 视图 ============ -->
+<div class="tomato-view hidden" id="tomatoView">
+  <div class="tv-inner" id="tvInner">
+    <div class="tv-tomato" id="tvTomato">
+      <svg viewBox="0 0 200 200">
+        <ellipse class="tv-body" cx="100" cy="118" rx="72" ry="66"/>
+        <path class="tv-shine" d="M62 96 q14 -22 40 -26 q-26 12 -30 34 q-6 -6 -10 -8z"/>
+        <path class="tv-leaf" d="M100 56 l-8 -14 8 4 4 -12 4 12 8 -4 -8 14z"/>
+        <ellipse class="tv-stem" cx="100" cy="54" rx="7" ry="10"/>
+        <path class="tv-leaf2" d="M100 58 q-26 -6 -36 -22 q22 2 34 14z"/>
+        <path class="tv-leaf2" d="M100 58 q26 -6 36 -22 q-22 2 -34 14z"/>
+      </svg>
+    </div>
+    <div class="tv-time" id="tvTime">25:00</div>
+    <div class="tv-phase" id="tvPhase">专注 · 默认</div>
+    <button class="btn tv-pause no-print" id="tvPause">⏸ 暂停</button>
+    <div class="tv-hint no-print">点击任意处退出番茄视图 · <kbd>Esc</kbd> 也可退出</div>
+  </div>
+</div>
+
+<!-- ============ 模式编辑弹窗 ============ -->
+<div class="modal-mask hidden" id="modeModal">
+  <div class="modal">
+    <div class="modal-title" id="modeModalTitle">添加模式</div>
+    <label class="field"><span>模式名称</span>
+      <input type="text" id="modeNameInput" maxlength="8" placeholder="例如：阅读" autocomplete="off">
+    </label>
+    <div class="field-row">
+      <label class="field"><span>专注（分钟）</span>
+        <input type="number" id="modeFocusInput" min="1" max="180" value="25">
+      </label>
+      <label class="field"><span>休息（分钟）</span>
+        <input type="number" id="modeBreakInput" min="1" max="60" value="5">
+      </label>
+    </div>
+    <label class="field"><span>颜色</span>
+      <div class="color-picks" id="colorPicks"></div>
+    </label>
+    <!-- Kibo 风格取色器面板（仿 Figma）：饱和度/亮度方块 + 色相/透明度滑条 + 吸管 + HEX -->
+    <div class="kibo-picker hidden" id="kiboPicker" role="group" aria-label="自定义颜色">
+      <div class="kp-selection" id="kpSelection" title="饱和度 / 亮度">
+        <div class="kp-sel-thumb" id="kpSelThumb"></div>
+      </div>
+      <div class="kp-row">
+        <button type="button" class="kp-eyedropper" id="kpEyedropper" title="从屏幕取色">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>
+        </button>
+        <div class="kp-sliders">
+          <div class="kp-slider kp-hue" id="kpHue" title="色相"><div class="kp-slider-thumb" id="kpHueThumb"></div></div>
+          <div class="kp-slider kp-alpha" id="kpAlpha" title="透明度">
+            <div class="kp-alpha-fill" id="kpAlphaFill"></div>
+            <div class="kp-slider-thumb" id="kpAlphaThumb"></div>
+          </div>
+        </div>
+      </div>
+      <div class="kp-output">
+        <div class="kp-preview" id="kpPreview" title="当前颜色"></div>
+        <input class="kp-hex" id="kpHex" type="text" spellcheck="false" maxlength="9" aria-label="HEX 颜色值">
+        <button type="button" class="kp-confirm" id="kpConfirm" title="应用此颜色">✓ 确认</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost hidden" id="deleteModeBtn">删除此模式</button>
+      <div class="spacer"></div>
+      <button class="btn" id="modeCancelBtn">取消</button>
+      <button class="btn btn-primary" id="modeSaveBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 设置弹窗 ============ -->
+<div class="modal-mask hidden" id="settingsModal">
+  <div class="modal">
+    <div class="modal-title">⚙️ 设置</div>
+
+    <div class="setting-row">
+      <div class="setting-label">🔊 完成提示音</div>
+      <label class="switch"><input type="checkbox" id="setSound"><span></span></label>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">🔁 专注完成后自动开始休息</div>
+      <label class="switch"><input type="checkbox" id="setAutoBreak"><span></span></label>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">▶ 休息完成后自动开始专注</div>
+      <label class="switch"><input type="checkbox" id="setAutoFocus"><span></span></label>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">🔆 专注时保持屏幕常亮</div>
+      <label class="switch"><input type="checkbox" id="setWake"><span></span></label>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">🍅 每日番茄目标（个）</div>
+      <input class="num-input" type="number" id="setGoal" min="1" max="50" value="8">
+    </div>
+
+    <div class="section-subtitle">数据</div>
+    <div class="data-actions">
+      <button class="btn" id="exportBtn">导出数据</button>
+      <button class="btn btn-warn" id="clearBtn">清空全部记录</button>
+    </div>
+
+    <div class="section-subtitle">☁️ 跨设备同步</div>
+    <div class="setting-row">
+      <div class="setting-label">同步码（相同同步码 = 同一份数据）</div>
+      <label class="switch"><input type="checkbox" id="setSync"><span></span></label>
+    </div>
+    <div class="sync-row">
+      <input class="sync-input" id="syncKeyInput" type="text" spellcheck="false"
+        maxlength="64" placeholder="点「生成」或粘贴其它设备的同步码" autocomplete="off">
+      <button class="btn" id="syncGenBtn" title="生成新同步码">生成</button>
+      <button class="btn btn-primary" id="syncSaveBtn">同步</button>
+    </div>
+    <div class="sync-status" id="syncStatus">未开启同步</div>
+
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="btn btn-primary" id="settingsCloseBtn">完成</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="motion.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

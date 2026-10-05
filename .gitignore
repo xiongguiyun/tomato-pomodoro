@@ -1,0 +1,8 @@
+# 部署只需要: index.html / style.css / app.js / motion.umd.js
+node_modules/
+.npm-cache/
+.acl-recovery/
+.wrangler/
+.jelly-radio.html
+jelly-radio.html
+.DS_Store
