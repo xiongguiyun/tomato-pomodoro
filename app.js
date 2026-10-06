@@ -473,8 +473,8 @@ function renderLevel() {
 
 /* 升级任务面板（默认折叠，只渲染数据，展开状态由用户控制） */
 function renderTasks() {
-  const panel = $("taskPanel");
-  if (panel.classList.contains("hidden")) return; // 折叠时不刷新，展开时立即更新
+  const panel = $("taskPanelInner");
+  if (!$("taskPanel").classList.contains("open")) return; // 折叠时不刷新，展开时立即更新
   const x = xp(), lv = levelOf(x);
   const cur = xpNeeded(lv), next = xpNeeded(lv + 1);
   const goal = store.settings.dailyGoal || 8;
@@ -620,6 +620,140 @@ function refreshAll() {
 
 /* ---------- 番茄视图 ---------- */
 let tvClosing = false;
+
+/* 戳一戳番茄：果冻挤压 + 粒子飞溅 + 语气泡 */
+const TV_PHRASES = [
+  // 日常吐槽
+  "别戳我啦！专心～ 🍅", "再戳就熟了！", "嘿！好痒 😆", "番茄也要休息呀",
+  "专注的人最帅了 ✨", "被你戳晕了…", "呜呜 🥺", "去学习！别玩我！",
+  "戳我也没用，快计时 ⏰", "今天的番茄格外甜 🍅", "再戳给你变大！", "抗议！严重抗议！",
+  // 撒娇/情绪
+  "再戳我就哭给你看 😭", "哼！生气了！", "你是不是暗恋我呀～ 💕", "轻点啦，人家怕痒",
+  "我是番茄，不是沙包！", "戳上瘾了是吧？", "好啦好啦，我投降 🏳️", "你手不酸吗？",
+  "再戳就要收费了 💰", "本番茄要告你骚扰！", "别闹～人家在冥想 🧘",
+  // 鼓励/催学
+  "放下番茄，拿起书本！📚", "时间在流逝哦 ⏳", "专注 25 分钟试试？",
+  "你已经很棒了，继续保持 💪", "摸鱼被我抓到了吧？", "距离学霸只差一个番茄",
+  "今日份的番茄完成了吗？", "别玩了，目标还没达成 🎯", "番茄与你同在 🍅✨",
+  // 里程碑特殊（按次数触发）
+  "已戳 10 次！手速惊人 🏎️", "25 次！这耐心可以用来学习了 📖", "50 次！番茄都被你戳出感情了 💗",
+  "100 次！！你是戳番茄宗师 👑",
+];
+const TV_MILESTONES = { 10: 0, 25: 1, 50: 2, 100: 3 }; // 索引指向里程碑语
+let tvPokeCount = 0;
+let tvBubbleTimer = 0;
+let tvLastPhraseIdx = -1;
+
+function pokeTomato(e) {
+  if (JR_REDUCED) return; // 减少动效偏好下不互动
+  const el = $("tvTomato");
+  // 依据点击方向给番茄一个反向倾斜，戳哪边歪哪边
+  if (e) {
+    const r = el.getBoundingClientRect();
+    const rel = (e.clientX - (r.left + r.width / 2)) / (r.width / 2); // -1~1
+    el.style.setProperty("--poke-tilt", `${(-rel * 10).toFixed(1)}deg`);
+  }
+  // 果冻挤压：重启动画
+  el.classList.remove("poke");
+  void el.offsetWidth;
+  el.classList.add("poke");
+
+  tvPokeCount++;
+  const rect = el.getBoundingClientRect();
+  const layer = $("tvParticles");
+  const layerRect = layer.getBoundingClientRect();
+  const cx = (e ? e.clientX : rect.left + rect.width / 2) - layerRect.left;
+  const cy = (e ? e.clientY : rect.top + rect.height / 2) - layerRect.top;
+
+  // 冲击波：一圈柔和光涟漪从点击点扩散消失（先清旧的，防连点残留）
+  layer.querySelectorAll(".tv-shock").forEach((s) => s.remove());
+  const shock = document.createElement("span");
+  shock.className = "tv-shock";
+  shock.style.left = `${cx}px`;
+  shock.style.top = `${cy}px`;
+  layer.appendChild(shock);
+  if (typeof shock.animate === "function") {
+    const a = shock.animate(
+      [
+        { transform: "translate(-50%, -50%) scale(.3)", opacity: .85 },
+        { transform: "translate(-50%, -50%) scale(3.6)", opacity: 0 },
+      ],
+      { duration: 420, easing: "cubic-bezier(.16,.84,.44,1)", fill: "forwards" }
+    );
+    // 动画一结束立刻移除，杜绝残影
+    if (a.finished && typeof a.finished.then === "function") {
+      a.finished.then(() => shock.remove()).catch(() => shock.remove());
+    } else {
+      a.onfinish = () => shock.remove();
+    }
+  } else {
+    shock.remove();
+  }
+  setTimeout(() => shock.remove(), 600); // 兜底
+
+  // 粒子飞溅：两波错帧（近处大粒子先出，远处小粒子后出），运动更连贯
+  const emojis = ["✨", "💥", "⭐", "🌟", "💫", "❤️", "💦", "🍃", "🔴", "😊"];
+  const n = 7 + Math.floor(Math.random() * 4); // 7~10 个
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement("span");
+    p.className = "tv-particle";
+    p.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+    // 均匀放射 + 随机扰动
+    const angle = (Math.PI * 2 * i) / n + (Math.random() - 0.5) * 0.6;
+    const dist = 70 + Math.random() * 110;
+    const dx = Math.cos(angle) * dist;
+    const dy = Math.sin(angle) * dist - 26;
+    const rot = (Math.random() - 0.5) * 480;
+    const scale0 = 0.75 + Math.random() * 0.65;
+    layer.appendChild(p);
+    p.style.left = `${cx}px`;
+    p.style.top = `${cy}px`;
+    p.style.fontSize = `${16 + Math.random() * 14}px`;
+    if (!JR_REDUCED && typeof p.animate === "function") {
+      // 单段 ease-out 抛物：起步快、末段慢落，无关键帧折线感
+      p.animate(
+        [
+          { transform: "translate(-50%, -50%) scale(.3) rotate(0deg)", opacity: 0 },
+          { transform: `translate(calc(-50% + ${dx * .5}px), calc(-50% + ${dy * .5 - 14}px)) scale(${scale0}) rotate(${rot * .45}deg)`, opacity: 1, offset: .28 },
+          { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy + 26}px)) scale(${scale0 * .88}) rotate(${rot * .8}deg)`, opacity: .95, offset: .62 },
+          { transform: `translate(calc(-50% + ${dx * 1.04}px), calc(-50% + ${dy + 96}px)) scale(${scale0 * .55}) rotate(${rot}deg)`, opacity: 0 },
+        ],
+        {
+          duration: 950 + Math.random() * 450,
+          delay: (i % 2) * 40,           // 双波错帧，观感更绵密
+          easing: "cubic-bezier(.12,.72,.28,1)",
+          fill: "forwards",
+        }
+      );
+    } else {
+      p.style.transform = `translate(-50%, -50%) translate(${dx}px, ${dy}px)`;
+      p.style.opacity = "0";
+    }
+    setTimeout(() => p.remove(), 1700);
+  }
+  // 语气泡：里程碑优先，普通吐槽防连续重复
+  const bubble = $("tvBubble");
+  let phrase;
+  const mi = TV_MILESTONES[tvPokeCount];
+  if (mi !== undefined) phrase = TV_PHRASES[30 + mi]; // 后 4 条为里程碑语
+  else {
+    // 普通池 = 前 30 条，随机且不与上一条相同
+    let idx;
+    do { idx = Math.floor(Math.random() * 30); } while (idx === tvLastPhraseIdx && TV_PHRASES.length > 1);
+    tvLastPhraseIdx = idx;
+    phrase = TV_PHRASES[idx];
+  }
+  bubble.textContent = phrase;
+  bubble.classList.remove("out", "hidden");
+  // 位置随机微调，避免单调
+  bubble.style.left = `${46 + Math.random() * 24}%`;
+  bubble.style.top = `${Math.random() * 10}%`;
+  clearTimeout(tvBubbleTimer);
+  tvBubbleTimer = setTimeout(() => {
+    bubble.classList.add("out");
+    setTimeout(() => bubble.classList.add("hidden"), 260);
+  }, 1800);
+}
 function openTomato() {
   if (tvOpen) return;
   tvOpen = true;
@@ -918,6 +1052,7 @@ function openSettings() {
   $("setAutoFocus").checked = s.autoFocus;
   $("setWake").checked = s.wake;
   $("setGoal").value = s.dailyGoal || 8;
+  $("setDark").checked = store.settings.theme === "dark";
   $("setSync").checked = !!s.syncOn;
   $("syncKeyInput").value = s.syncKey || "";
   SYNC.renderStatus();
@@ -1367,10 +1502,10 @@ function bind() {
   // 升级任务：默认折叠，点击展开/收起
   $("taskToggle").onclick = () => {
     const panel = $("taskPanel"), btn = $("taskToggle");
-    const open = panel.classList.contains("hidden");
-    panel.classList.toggle("hidden", !open);
+    const open = !panel.classList.contains("open");
+    panel.classList.toggle("open", open);
     btn.setAttribute("aria-expanded", String(open));
-    if (open) renderTasks();
+    if (open) renderTasks(); // 展开后再渲染，行入场动画随展开播放
   };
 
   $("themeBtn").onclick = toggleTheme;
@@ -1378,6 +1513,7 @@ function bind() {
   $("settingsBtn").onclick = openSettings;
   $("settingsCloseBtn").onclick = closeSettings;
   $("setSound").onchange = (e) => { store.settings.sound = e.target.checked; save(); if (e.target.checked) beep(false); };
+  $("setDark").onchange = (e) => { store.settings.theme = e.target.checked ? "dark" : "light"; save(); applyTheme(store.settings.theme); };
   $("setAutoBreak").onchange = (e) => { store.settings.autoBreak = e.target.checked; save(); };
   $("setAutoFocus").onchange = (e) => { store.settings.autoFocus = e.target.checked; save(); };
   $("setWake").onchange = (e) => { store.settings.wake = e.target.checked; save(); if (!e.target.checked) releaseWake(); else if (T.status === "running") requestWake(); };
@@ -1402,7 +1538,32 @@ function bind() {
     else if (T.status === "paused") resumeTimer();
     else startTimer();
   };
-  $("tvInner").onclick = (e) => { if (e.target === $("tvInner") || e.target.closest(".tv-tomato, .tv-time, .tv-phase, .tv-hint")) closeTomato(); };
+  // 全屏层统一接管：点到番茄图形 → 互动；点其它任何地方 → 关闭
+  $("tomatoView").onclick = (e) => {
+    if (e.target.closest("#tvPause")) return; // 暂停按钮自行处理
+    // 精确匹配番茄实际图形（光晕层 pointer-events:none 不拦截，点它等于点身体）
+    const onTomatoShape = e.target.closest(".tv-body, .tv-shine, .tv-leaf, .tv-leaf2, .tv-stem, .tv-glow, .tv-crown");
+    if (onTomatoShape) { pokeTomato(e); return; }
+    closeTomato();
+  };
+  // hover：番茄朝光标方向轻轻歪头（只在专注页面开启时生效）
+  $("tomatoView").addEventListener("pointermove", (e) => {
+    if (!tvOpen || tvClosing || JR_REDUCED) return;
+    const svg = $("tvTomato").querySelector("svg");
+    if (!svg) return;
+    const r = $("tvTomato").getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const dx = (e.clientX - cx) / (window.innerWidth / 2);
+    const dy = (e.clientY - cy) / (window.innerHeight / 2);
+    // 距离越远歪得越明显，上限 ±7°
+    const tiltX = Math.max(-7, Math.min(7, dy * -6));
+    const tiltY = Math.max(-7, Math.min(7, dx * 6));
+    svg.style.transform = `perspective(600px) rotateX(${tiltX.toFixed(2)}deg) rotateY(${tiltY.toFixed(2)}deg)`;
+  });
+  $("tomatoView").addEventListener("pointerleave", () => {
+    const svg = $("tvTomato").querySelector("svg");
+    if (svg) svg.style.transform = "";
+  });
 
   $("addModeBtn").onclick = () => openModeModal(null);
   $("modeCancelBtn").onclick = closeModeModal;

@@ -304,7 +304,7 @@ body {
   border-radius: 999px; transition: width .6s cubic-bezier(.4, 0, .2, 1);
 }
 
-/* ---------- 升级任务（默认折叠） ---------- */
+/* ---------- 升级任务（平滑展开/收缩） ---------- */
 .task-toggle {
   display: flex; align-items: center; gap: 6px;
   margin-top: 12px; padding: 7px 0;
@@ -315,20 +315,38 @@ body {
   transition: color .16s ease;
 }
 .task-toggle:hover { color: var(--accent); }
-.task-toggle-arrow { display: inline-block; transition: transform .25s ease; font-size: 12px; }
+.task-toggle-arrow { display: inline-block; transition: transform .3s cubic-bezier(.34, 1.56, .64, 1); font-size: 12px; }
 .task-toggle[aria-expanded="true"] .task-toggle-arrow { transform: rotate(90deg); }
-.task-panel {
-  overflow: hidden;
-  display: flex; flex-direction: column; gap: 8px;
-  animation: taskIn .28s cubic-bezier(.4, 0, .2, 1);
+/* grid-template-rows 0fr→1fr 过渡：高度自适应的平滑折叠 */
+.task-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows .38s cubic-bezier(.4, 0, .2, 1),
+    opacity .28s ease;
 }
-@keyframes taskIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.task-collapse.open { grid-template-rows: 1fr; opacity: 1; }
+.task-collapse-inner { overflow: hidden; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.task-collapse.open .task-row {
+  animation: taskRowIn .32s cubic-bezier(.34, 1.3, .64, 1) backwards;
+}
+.task-collapse.open .task-row:nth-child(1) { animation-delay: .05s; }
+.task-collapse.open .task-row:nth-child(2) { animation-delay: .11s; }
+.task-collapse.open .task-row:nth-child(3) { animation-delay: .17s; }
+@keyframes taskRowIn { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+.task-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  padding-top: 8px;
+}
 .task-row {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px;
   background: var(--card-2); border: 1px solid var(--border);
   border-radius: 12px;
+  transition: transform .16s ease, border-color .16s ease;
 }
+.task-row:hover { transform: translateY(-1px); }
 .task-icon { font-size: 15px; flex: none; }
 .task-body { flex: 1; min-width: 0; }
 .task-title { font-size: 12.5px; font-weight: 700; }
@@ -508,14 +526,99 @@ kbd {
 @keyframes tvOut { to { opacity: 0; } }
 @keyframes tvInnerOut { to { transform: scale(.86) translateY(-26px); opacity: 0; } }
 html[data-theme="dark"] .tomato-view { background: #06070b; }
-.tv-inner { display: flex; flex-direction: column; align-items: center; gap: 10px; user-select: none; }
-.tv-tomato { width: min(46vh, 64vw); animation: floaty 4s ease-in-out infinite; filter: drop-shadow(0 24px 40px rgba(239, 68, 68, .35)); }
+.tv-inner { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; user-select: none; }
+.tv-tomato {
+  width: min(46vh, 64vw); animation: floaty 4s ease-in-out infinite;
+  filter: drop-shadow(0 24px 40px rgba(239, 68, 68, .35));
+  cursor: pointer; touch-action: manipulation;
+  transition: filter .2s ease;
+}
+.tv-tomato:hover { filter: drop-shadow(0 28px 46px rgba(239, 68, 68, .5)); }
+/* 戳一戳：果冻挤压回弹（结束后无缝续上漂浮动画） */
+.tv-tomato.poke { animation: poke .55s cubic-bezier(.34, 1.56, .64, 1), floaty 4s ease-in-out .55s infinite; }
+@keyframes poke {
+  0% { transform: rotate(var(--poke-tilt, 0deg)) scale(1); }
+  22% { transform: rotate(calc(var(--poke-tilt, 0deg) * -.4)) scale(1.18, .82); }
+  48% { transform: rotate(calc(var(--poke-tilt, 0deg) * .5)) scale(.88, 1.14); }
+  72% { transform: rotate(calc(var(--poke-tilt, 0deg) * -.2)) scale(1.06, .95); }
+  100% { transform: rotate(0deg) scale(1); }
+}
+/* 番茄本体反应：亮度脉冲 + 果冠整组摆动 + 光晕 */
+.tv-tomato.poke .tv-body { animation: bodyFlash .55s ease; }
+@keyframes bodyFlash {
+  0% { filter: brightness(1); }
+  25% { filter: brightness(1.35) saturate(1.3); }
+  100% { filter: brightness(1); }
+}
+/* 果冠（叶+蒂为一个 <g>）：绕蒂根整体摆动，协调不散架 */
+.tv-crown { transform-box: view-box; transform-origin: 100px 62px; }
+.tv-tomato.poke .tv-crown { animation: crownWiggle .6s cubic-bezier(.34, 1.56, .64, 1); }
+@keyframes crownWiggle {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-13deg); }
+  55% { transform: rotate(9deg); }
+  78% { transform: rotate(-4deg); }
+}
+/* 光晕：戳中时体内亮起柔和光斑再散去 */
+.tv-tomato.poke .tv-glow { animation: glowBurst .6s ease-out; }
+@keyframes glowBurst {
+  0% { opacity: 0; transform: scale(.7); }
+  28% { opacity: .9; transform: scale(1.05); }
+  100% { opacity: 0; transform: scale(1.25); }
+}
+.tv-glow { transform-origin: 100px 118px; transform-box: view-box; pointer-events: none; }
+.tv-tomato.poke .tv-shine { animation: shinePulse .55s ease; transform-box: fill-box; transform-origin: 30% 40%; }
+@keyframes shinePulse {
+  0%, 100% { opacity: .35; transform: scale(1); }
+  35% { opacity: .95; transform: scale(1.18); }
+}
+/* hover：番茄朝光标轻微倾斜 */
+.tv-tomato svg { transition: transform .3s ease-out; }
+/* 语气泡 */
+.tv-bubble {
+  position: absolute; top: 4%; left: 58%;
+  max-width: 200px; padding: 8px 14px;
+  background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 14px;
+  font-size: 13.5px; font-weight: 700; line-height: 1.4;
+  box-shadow: var(--shadow);
+  animation: bubbleIn .3s cubic-bezier(.34, 1.56, .64, 1);
+  pointer-events: none; z-index: 2;
+}
+.tv-bubble::after {
+  content: ''; position: absolute; left: 14px; bottom: -6px;
+  width: 10px; height: 10px;
+  background: var(--card); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+.tv-bubble.out { animation: bubbleOut .25s ease forwards; }
+@keyframes bubbleIn { from { opacity: 0; transform: translateY(8px) scale(.8); } to { opacity: 1; transform: none; } }
+@keyframes bubbleOut { to { opacity: 0; transform: translateY(-8px) scale(.85); } }
+/* 粒子层 */
+.tv-particles { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 1; }
+.tv-particle {
+  position: absolute; font-size: 22px; line-height: 1;
+  will-change: transform, opacity;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tv-tomato.poke { animation: none; }
+}
 .tv-tomato svg { width: 100%; height: auto; }
 .tv-body { fill: #e8412f; }
 .tv-shine { fill: rgba(255, 255, 255, .35); }
 .tv-leaf, .tv-leaf2 { fill: #3faa5c; }
 .tv-stem { fill: #2f8a49; }
 .tv-tomato.blink .tv-body { animation: blink .9s ease infinite; }
+
+/* ---------- 冲击波 ---------- */
+.tv-shock {
+  position: absolute; width: 30px; height: 30px;
+  border-radius: 50%; border: 2.5px solid rgba(255, 255, 255, .85);
+  transform: translate(-50%, -50%);
+  pointer-events: none; z-index: 0;
+}
+.tv-particle { text-shadow: 0 2px 6px rgba(0, 0, 0, .18); }
 .tv-time {
   font-size: clamp(48px, 12vw, 84px); font-weight: 800; letter-spacing: 3px;
   font-variant-numeric: tabular-nums;
@@ -698,6 +801,31 @@ html[data-theme="dark"] .tomato-view { background: #06070b; }
 .kp-confirm:active { transform: scale(.96); }
 .modal-actions { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
 .spacer { flex: 1; }
+
+/* ---------- 设置分组卡片 ---------- */
+.settings-modal { width: min(430px, 100%); }
+.settings-group {
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 2px 14px;
+  margin-bottom: 12px;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+.settings-group:hover { border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.sg-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0 2px;
+}
+.sg-ico {
+  width: 24px; height: 24px; flex: none;
+  display: grid; place-items: center;
+  font-size: 13px;
+  background: var(--accent-soft);
+  border-radius: 8px;
+}
+.sg-title { font-size: 12px; font-weight: 800; color: var(--text-2); letter-spacing: 1px; }
+.settings-group .setting-row:last-child { border-bottom: none; }
 
 .setting-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

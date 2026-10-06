@@ -45,7 +45,7 @@
       </div>
     </div>
 
-    <button class="tomato-view-btn no-print" id="tomatoViewBtn" title="只显示番茄 (F)">🍅 只显示番茄</button>
+    <button class="tomato-view-btn no-print" id="tomatoViewBtn" title="专注页面 (F)">🍅 专注页面</button>
 
     <div class="controls no-print" id="controls">
       <button class="btn btn-primary" id="mainBtn">▶ 开始</button>
@@ -79,7 +79,9 @@
     <button class="task-toggle" id="taskToggle" aria-expanded="false">
       <span class="task-toggle-arrow">▸</span> 提升等级的任务
     </button>
-    <div class="task-panel hidden" id="taskPanel"></div>
+    <div class="task-collapse" id="taskPanel">
+      <div class="task-collapse-inner" id="taskPanelInner"></div>
+    </div>
   </section>
 
   <!-- ============ 统计卡片 ============ -->
@@ -127,27 +129,40 @@
   </section>
 
   <footer class="foot no-print">
-    快捷键：<kbd>空格</kbd> 开始/暂停 · <kbd>R</kbd> 重置 · <kbd>S</kbd> 跳过 · <kbd>I</kbd> 被打断 · <kbd>F</kbd> 番茄视图 · <kbd>T</kbd> 主题
+    快捷键：<kbd>空格</kbd> 开始/暂停 · <kbd>R</kbd> 重置 · <kbd>S</kbd> 跳过 · <kbd>I</kbd> 被打断 · <kbd>F</kbd> 专注页面 · <kbd>T</kbd> 主题
   </footer>
 </main>
 
-<!-- ============ 只显示番茄 视图 ============ -->
+<!-- ============ 专注页面（原只显示番茄） ============ -->
 <div class="tomato-view hidden" id="tomatoView">
   <div class="tv-inner" id="tvInner">
-    <div class="tv-tomato" id="tvTomato">
+    <div class="tv-bubble hidden" id="tvBubble"></div>
+    <div class="tv-particles" id="tvParticles" aria-hidden="true"></div>
+    <div class="tv-tomato" id="tvTomato" title="戳一戳 🍅">
       <svg viewBox="0 0 200 200">
+        <defs>
+          <radialGradient id="tvGlowGrad" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fff" stop-opacity=".85"/>
+            <stop offset="55%" stop-color="#ffd9d0" stop-opacity=".35"/>
+            <stop offset="100%" stop-color="#ffb3a0" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
         <ellipse class="tv-body" cx="100" cy="118" rx="72" ry="66"/>
+        <ellipse class="tv-glow" cx="100" cy="118" rx="72" ry="66" fill="url(#tvGlowGrad)" opacity="0"/>
         <path class="tv-shine" d="M62 96 q14 -22 40 -26 q-26 12 -30 34 q-6 -6 -10 -8z"/>
-        <path class="tv-leaf" d="M100 56 l-8 -14 8 4 4 -12 4 12 8 -4 -8 14z"/>
-        <ellipse class="tv-stem" cx="100" cy="54" rx="7" ry="10"/>
-        <path class="tv-leaf2" d="M100 58 q-26 -6 -36 -22 q22 2 34 14z"/>
-        <path class="tv-leaf2" d="M100 58 q26 -6 36 -22 q-22 2 -34 14z"/>
+        <!-- 果冠（叶+蒂）：整组绕蒂根部摆动，不会散架 -->
+        <g class="tv-crown">
+          <path class="tv-leaf" d="M100 56 l-8 -14 8 4 4 -12 4 12 8 -4 -8 14z"/>
+          <ellipse class="tv-stem" cx="100" cy="54" rx="7" ry="10"/>
+          <path class="tv-leaf2" d="M100 58 q-26 -6 -36 -22 q22 2 34 14z"/>
+          <path class="tv-leaf2" d="M100 58 q26 -6 36 -22 q-22 2 -34 14z"/>
+        </g>
       </svg>
     </div>
     <div class="tv-time" id="tvTime">25:00</div>
     <div class="tv-phase" id="tvPhase">专注 · 默认</div>
     <button class="btn tv-pause no-print" id="tvPause">⏸ 暂停</button>
-    <div class="tv-hint no-print">点击任意处退出番茄视图 · <kbd>Esc</kbd> 也可退出</div>
+    <div class="tv-hint no-print">🍅 戳一戳番茄 · 点击任意处退出 · <kbd>Esc</kbd> 也可退出</div>
   </div>
 </div>
 
@@ -203,48 +218,63 @@
 
 <!-- ============ 设置弹窗 ============ -->
 <div class="modal-mask hidden" id="settingsModal">
-  <div class="modal">
+  <div class="modal settings-modal">
     <div class="modal-title">⚙️ 设置</div>
 
-    <div class="setting-row">
-      <div class="setting-label">🔊 完成提示音</div>
-      <label class="switch"><input type="checkbox" id="setSound"><span></span></label>
-    </div>
-    <div class="setting-row">
-      <div class="setting-label">🔁 专注完成后自动开始休息</div>
-      <label class="switch"><input type="checkbox" id="setAutoBreak"><span></span></label>
-    </div>
-    <div class="setting-row">
-      <div class="setting-label">▶ 休息完成后自动开始专注</div>
-      <label class="switch"><input type="checkbox" id="setAutoFocus"><span></span></label>
-    </div>
-    <div class="setting-row">
-      <div class="setting-label">🔆 专注时保持屏幕常亮</div>
-      <label class="switch"><input type="checkbox" id="setWake"><span></span></label>
-    </div>
-    <div class="setting-row">
-      <div class="setting-label">🍅 每日番茄目标（个）</div>
-      <input class="num-input" type="number" id="setGoal" min="1" max="50" value="8">
-    </div>
-
-    <div class="section-subtitle">数据</div>
-    <div class="data-actions">
-      <button class="btn" id="exportBtn">导出数据</button>
-      <button class="btn btn-warn" id="clearBtn">清空全部记录</button>
+    <div class="settings-group">
+      <div class="sg-head"><span class="sg-ico">🍅</span><span class="sg-title">计时</span></div>
+      <div class="setting-row">
+        <div class="setting-label">每日番茄目标（个）</div>
+        <input class="num-input" type="number" id="setGoal" min="1" max="50" value="8">
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">🔁 专注完成后自动开始休息</div>
+        <label class="switch"><input type="checkbox" id="setAutoBreak"><span></span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">▶ 休息完成后自动开始专注</div>
+        <label class="switch"><input type="checkbox" id="setAutoFocus"><span></span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">🔆 专注时保持屏幕常亮</div>
+        <label class="switch"><input type="checkbox" id="setWake"><span></span></label>
+      </div>
     </div>
 
-    <div class="section-subtitle">☁️ 跨设备同步</div>
-    <div class="setting-row">
-      <div class="setting-label">同步码（相同同步码 = 同一份数据）</div>
-      <label class="switch"><input type="checkbox" id="setSync"><span></span></label>
+    <div class="settings-group">
+      <div class="sg-head"><span class="sg-ico">🔔</span><span class="sg-title">提醒</span></div>
+      <div class="setting-row">
+        <div class="setting-label">🔊 完成提示音</div>
+        <label class="switch"><input type="checkbox" id="setSound"><span></span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">🌙 深色主题</div>
+        <label class="switch"><input type="checkbox" id="setDark"><span></span></label>
+      </div>
     </div>
-    <div class="sync-row">
-      <input class="sync-input" id="syncKeyInput" type="text" spellcheck="false"
-        maxlength="64" placeholder="点「生成」或粘贴其它设备的同步码" autocomplete="off">
-      <button class="btn" id="syncGenBtn" title="生成新同步码">生成</button>
-      <button class="btn btn-primary" id="syncSaveBtn">同步</button>
+
+    <div class="settings-group">
+      <div class="sg-head"><span class="sg-ico">☁️</span><span class="sg-title">跨设备同步</span></div>
+      <div class="setting-row">
+        <div class="setting-label">相同同步码 = 同一份数据</div>
+        <label class="switch"><input type="checkbox" id="setSync"><span></span></label>
+      </div>
+      <div class="sync-row">
+        <input class="sync-input" id="syncKeyInput" type="text" spellcheck="false"
+          maxlength="64" placeholder="点「生成」或粘贴其它设备的同步码" autocomplete="off">
+        <button class="btn" id="syncGenBtn" title="生成新同步码">生成</button>
+        <button class="btn btn-primary" id="syncSaveBtn">同步</button>
+      </div>
+      <div class="sync-status" id="syncStatus">未开启同步</div>
     </div>
-    <div class="sync-status" id="syncStatus">未开启同步</div>
+
+    <div class="settings-group">
+      <div class="sg-head"><span class="sg-ico">💾</span><span class="sg-title">数据</span></div>
+      <div class="data-actions">
+        <button class="btn" id="exportBtn">导出数据</button>
+        <button class="btn btn-warn" id="clearBtn">清空全部记录</button>
+      </div>
+    </div>
 
     <div class="modal-actions">
       <div class="spacer"></div>
