@@ -1,10 +1,12 @@
-# 不作为静态资源上传
-node_modules/
-.npm-cache/
-.acl-recovery/
-.wrangler/
-functions/
+# 不作为静态资源上传（避免超过 Workers 免费版 20000 文件上限）
+node_modules
+.npm-cache
+.acl-recovery
+.wrangler
+functions
 package.json
 package-lock.json
 wrangler.jsonc
 部署指南.md
+.git
+.gitignore
