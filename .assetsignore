@@ -10,3 +10,4 @@ wrangler.jsonc
 部署指南.md
 .git
 .gitignore
+worker.js
