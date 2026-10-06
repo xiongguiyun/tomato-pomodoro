@@ -3,7 +3,7 @@
   "main": "worker.js",
   "compatibility_date": "2026-10-06",
   "assets": {
-    "directory": "./",
+    "directory": "./public",
     "not_found_handling": "single-page-application",
     "html_handling": "auto-trailing-slash",
     "run_worker_first": ["/api/*"]
