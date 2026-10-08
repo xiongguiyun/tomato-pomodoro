@@ -21,7 +21,7 @@ export default {
       const id = `tomato:${key}`;
 
       if (request.method === "GET") {
-        return json(await env.POMODORO_KV.get(id, "type json"));
+        return json(await env.POMODORO_KV.get(id, "json"));
       }
       if (request.method === "PUT" || request.method === "POST") {
         const body = await request.text();
