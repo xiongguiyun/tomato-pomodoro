@@ -1,8 +1,6 @@
-# 部署只需要: index.html / style.css / app.js / motion.umd.js
+# 依赖与缓存（部署不需要，Worker 只读 public/）
 node_modules/
 .npm-cache/
 .acl-recovery/
 .wrangler/
-.jelly-radio.html
-jelly-radio.html
 .DS_Store
