@@ -30,6 +30,17 @@ const DEFAULT_MODES = [
 ];
 let store = load();
 
+// 记录唯一 id：删除/多选需要稳定标识，旧数据按 时间戳+序号 回填
+const uid = () => "s-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+function withIds(list) {
+  return (Array.isArray(list) ? list : []).map((s, i) => (s && s.id ? s : { ...s, id: `legacy-${s && s.ts}-${i}` }));
+}
+
+/* 读取本地数据。
+   必须保留 updatedAt：它是跨设备同步的冲突仲裁依据（最后写入者胜）。
+   早先这里漏掉了它，于是每次重新打开页面 store.updatedAt 都是 undefined，
+   同步时 localTs 被当成 0，永远判定「云端更新」，
+   结果本机刚完成的记录会被云端旧数据覆盖 —— 真实的数据丢失。 */
 function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "null");
@@ -38,15 +49,18 @@ function load() {
         modes: raw.modes,
         activeModeId: raw.activeModeId || raw.modes[0].id,
         settings: Object.assign({ theme: "light", sound: true, autoBreak: false, autoFocus: false, wake: false, dailyGoal: 8 }, raw.settings || {}),
-        sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
+        sessions: withIds(raw.sessions),
         interrupts: Array.isArray(raw.interrupts) ? raw.interrupts : [],
         goalDay: raw.goalDay || "",
+        quests: raw.quests && raw.quests.days ? raw.quests : { days: {} },
+        questXp: Number(raw.questXp) || 0,
+        updatedAt: Number(raw.updatedAt) || 0,
       };
     }
   } catch (e) { /* 数据损坏则重建 */ }
   return { modes: DEFAULT_MODES.map((m) => ({ ...m })), activeModeId: "m-default",
     settings: { theme: "light", sound: true, autoBreak: false, autoFocus: false, wake: false, dailyGoal: 8 },
-    sessions: [], interrupts: [], goalDay: "" };
+    sessions: [], interrupts: [], goalDay: "", quests: { days: {} }, questXp: 0, updatedAt: 0 };
 }
 function save() {
   try {
@@ -119,7 +133,7 @@ function stopSession() {
   T.status = "idle";
   T.remaining = phaseTotal();
   if (T.phase === "focus" && focused >= 30000) {
-    store.sessions.push({ ts: Date.now(), m: activeMode().name, status: "stopped", sec: Math.round(focused / 1000) });
+    store.sessions.push({ id: uid(), ts: Date.now(), m: activeMode().name, status: "stopped", sec: Math.round(focused / 1000) });
     save();
     toast(`已停止，记录 ${fmtDur(focused / 60000)} 专注 🍅`);
   } else {
@@ -135,7 +149,7 @@ function skipPhase() {
   const doneFocus = T.phase === "focus";
   const focused = T.focusMs + (T.status === "running" ? Date.now() - T.segStart : 0);
   if (doneFocus && focused >= 30000) {
-    store.sessions.push({ ts: Date.now(), m: activeMode().name, status: "stopped", sec: Math.round(focused / 1000) });
+    store.sessions.push({ id: uid(), ts: Date.now(), m: activeMode().name, status: "stopped", sec: Math.round(focused / 1000) });
     save();
   }
   const next = doneFocus ? "break" : "focus";
@@ -148,7 +162,7 @@ function interruptPhase() {
   store.interrupts.push(Date.now());
   const focused = T.focusMs + (T.status === "running" ? Date.now() - T.segStart : 0);
   if (T.phase === "focus" && focused >= 30000) {
-    store.sessions.push({ ts: Date.now(), m: activeMode().name, status: "interrupted", sec: Math.round(focused / 1000) });
+    store.sessions.push({ id: uid(), ts: Date.now(), m: activeMode().name, status: "interrupted", sec: Math.round(focused / 1000) });
   }
   save();
   T.status = "idle";
@@ -164,7 +178,7 @@ function completePhase() {
   const wasFocus = T.phase === "focus";
   if (wasFocus) {
     const m = activeMode();
-    store.sessions.push({ ts: Date.now(), m: m.name, status: "completed", sec: m.focus * 60 });
+    store.sessions.push({ id: uid(), ts: Date.now(), m: m.name, status: "completed", sec: m.focus * 60 });
     save();
     beep(true);
     checkGoal();
@@ -252,16 +266,251 @@ function streak() {
 function totalMinutes() { return store.sessions.reduce((a, s) => a + s.sec, 0) / 60; }
 
 /* ---------- 等级 ---------- */
-const LEVEL_NAMES = ["种子", "发芽", "幼苗", "青苗", "番茄苗", "结果", "满园", "番茄新手", "番茄熟手",
-  "番茄达人", "专注学徒", "专注好手", "深度行者", "心流旅人", "心流大师", "效率专家", "传奇园丁", "不朽传说"];
-function xp() { return Math.round(totalMinutes()) + completedSessions().length * 5; }
+/* 等级上限集中定义：以前 99 这个数字散落在 levelOf 和等级页面两处，
+   改一处漏一处就会出现「列表有 100 级、但练到 99 就卡住」的不一致。 */
+const LEVEL_CAP = 100;
+
+/* 100 级，每级一个专属名字，全部不超过 4 个字。
+   命名按意象逐级递进：萌芽 → 专注修行 → 收获满园 → 攀登星空 → 神话登顶。
+   前 18 个沿用原有名字，保证老用户的等级身份不变。
+   名字必须两两不同：等级页面会整列展示，重名会让人以为渲染错了 */
+const LEVEL_NAMES = [
+  // 1-18：萌芽、收获与入门（沿用原有名字）
+  "种子", "发芽", "幼苗", "青苗", "番茄苗", "结果", "满园", "番茄新手", "番茄熟手",
+  "番茄达人", "专注学徒", "专注好手", "深度行者", "心流旅人", "心流大师", "效率专家", "传奇园丁", "不朽传说",
+  // 19-36：专注修行，由匠人走向宗师
+  "专注匠人", "心流常客", "时间猎手", "节奏掌控", "专注骑士", "心流舵手", "沉浸专家",
+  "静心学徒", "静心好手", "静心匠人", "凝神行者", "聚神旅人", "入定修行", "澄心修士",
+  "觉察之眼", "觉知之心", "专注宗师", "心流宗师",
+  // 37-56：时间与园圃，把专注种成果园
+  "时光管家", "光阴匠人", "节拍大师", "韵律行者", "番茄名家", "番茄宗师", "园圃守望",
+  "果园领主", "温室匠人", "沃土耕者", "播种圣人", "花蕾守护", "绽放使者", "丰收使者",
+  "硕果累累", "红果盈枝", "果园吟游", "花园隐士", "田野诗人", "沃野旅人",
+  // 57-76：攀登与星空，走向更大的尺度
+  "藤蔓攀者", "高塔登临", "峰顶眺望", "山巅行者", "云端漫步", "星轨观测", "星辰匠人",
+  "银河摆渡", "星际旅人", "苍穹骑士", "天穹守望", "宇宙学徒", "时空旅者", "时空匠人",
+  "维度行者", "光阴宗师", "时砂掌控", "沙漏守护", "刻漏大师", "永恒匠人",
+  // 77-100：史诗与神话，等级阶梯的顶端
+  "传说续写", "史诗吟唱", "神话编织", "传奇锻造", "无双匠人", "无极行者", "太一守望",
+  "混沌初开", "秩序重建", "纪元开创", "纪元守望", "星河主宰", "时光君主", "专注王者",
+  "心流帝王", "定境圣者", "悟道真人", "得道圣者", "至臻之境", "万象归一", "天地共鸣",
+  "时空主宰", "永恒传说", "番茄之神",
+];
+function xp() { return Math.round(totalMinutes()) + completedSessions().length * 5 + (store.questXp || 0); }
 function levelOf(x) {
   let lv = 1;
-  while (lv < 99 && x >= xpNeeded(lv + 1)) lv++;
+  while (lv < LEVEL_CAP && x >= xpNeeded(lv + 1)) lv++;
   return lv;
 }
 function xpNeeded(lv) { return lv <= 1 ? 0 : Math.round(60 * Math.pow(lv - 1, 1.5)); }
-function levelName(lv) { return LEVEL_NAMES[lv - 1] || `达人 Lv.${lv}`; }
+// 兜底只在越界时触发（上限内每级都有名字），给中性文本而不是冒充某个等级名
+function levelName(lv) { return LEVEL_NAMES[lv - 1] || `Lv.${lv}`; }
+
+/* ---------- 每日任务（等级任务） ----------
+   设计要点：
+   1) 任务不是「随便凑 5 条」，而是覆盖不同行为维度：番茄数 / 时长 / 打卡 / 访问 / 节奏。
+   2) 每日从池中按「日期」确定性抽取，保证同一天多次打开完全一致（不能用随机数，
+      否则刷新一次任务就变了，进度也会错位）。
+   3) 任务进度全部从已有数据实时推导，不额外存进度，避免数据不一致。
+   4) 难度按账号等级动态缩放，让高等级用户也有挑战。
+*/
+const QUEST_XP = { easy: 15, normal: 25, hard: 40, epic: 60 };
+
+/* 任务数据兜底：来自云端的旧数据可能没有 quests 字段。
+   这里分成「只读」与「写入」两条路径：渲染阶段绝不能产生副作用，
+   否则一次纯渲染就可能把 store 改成脏数据。 */
+function questDay() {
+  const q = store.quests;
+  if (!q || typeof q !== "object" || !q.days) return { claimed: [] };
+  const d = q.days[visitKey()];
+  if (!d || typeof d !== "object") return { claimed: [] };
+  return { claimed: Array.isArray(d.claimed) ? d.claimed : [] };
+}
+function questDayMut() {
+  if (!store.quests || typeof store.quests !== "object" || !store.quests.days) store.quests = { days: {} };
+  const k = visitKey();
+  if (!store.quests.days[k] || typeof store.quests.days[k] !== "object") store.quests.days[k] = { claimed: [] };
+  const d = store.quests.days[k];
+  if (!Array.isArray(d.claimed)) d.claimed = [];
+  pruneDays(store.quests.days);
+  return d;
+}
+
+/* dayKey 生成的月份/日期没有补零（如 "2026-9-10"），直接按字符串排序会把
+   "2026-10-1" 排到 "2026-9-10" 前面，导致清理旧数据时误删最近的日子。
+   这里解析回时间戳按真实日期排序。 */
+function dayKeyToTs(key) {
+  const p = String(key).split("-");
+  if (p.length !== 3) return 0;
+  const [y, m, d] = p.map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return 0;
+  return new Date(y, m, d).getTime();
+}
+/* 只保留最近 N 天，避免无限增长 */
+function pruneDays(obj, keep = 60) {
+  const keys = Object.keys(obj).sort((a, b) => dayKeyToTs(a) - dayKeyToTs(b));
+  while (keys.length > keep) delete obj[keys.shift()];
+}
+
+/* 访问打卡：每台设备每天首次打开页面记一次，用于「访问网页」类任务。
+   刻意存在单独的 localStorage 键里，而不是 store 里：
+   「今天有没有打开过这个网页」天生是每台设备各自的属性，不该参与云端同步；
+   更重要的是，如果写进 store 就得调用 save()，而 save() 会刷新 updatedAt，
+   导致一台数据较旧的设备刚打开页面就把「本地较新」的假象报给同步逻辑，
+   反过来覆盖掉云端刚写入的新数据。 */
+const VISIT_KEY = "pomodoro.visits.v1";
+let firstVisitToday = false;
+let visitDays = (() => {
+  try {
+    const o = JSON.parse(localStorage.getItem(VISIT_KEY) || "null");
+    return o && typeof o === "object" ? o : {};
+  } catch (e) { return {}; }
+})();
+function visitKey() { return dayKey(Date.now()); }
+function visitsToday() { return visitDays[visitKey()] || 0; }
+function markVisit() {
+  firstVisitToday = visitsToday() === 0;
+  const k = visitKey();
+  visitDays[k] = (visitDays[k] || 0) + 1;
+  pruneDays(visitDays);
+  try { localStorage.setItem(VISIT_KEY, JSON.stringify(visitDays)); } catch (e) { /* 配额满则放弃 */ }
+}
+
+/* 今日已完成番茄的「模式多样性」：不同模式各完成过至少 1 个 */
+function distinctModesToday() {
+  const d0 = startOfDay(Date.now());
+  const set = new Set();
+  store.sessions.forEach((s) => {
+    if (s.status === "completed" && s.ts >= d0 && s.m) set.add(s.m);
+  });
+  return set.size;
+}
+
+/* 今日最早的完成时间（用于「早起番茄」） */
+function earliestFocusHourToday() {
+  const d0 = startOfDay(Date.now());
+  let best = null;
+  store.sessions.forEach((s) => {
+    if (s.status === "completed" && s.ts >= d0) {
+      const h = new Date(s.ts).getHours();
+      if (best === null || h < best) best = h;
+    }
+  });
+  return best;
+}
+
+/* 今日所有专注的总分钟数 */
+function minutesToday() {
+  const d0 = startOfDay(Date.now());
+  return store.sessions.filter((s) => s.ts >= d0).reduce((a, s) => a + s.sec, 0) / 60;
+}
+
+/* 今日最长的一次连续专注（分钟） */
+function longestToday() {
+  const d0 = startOfDay(Date.now());
+  return store.sessions.filter((s) => s.ts >= d0).reduce((a, s) => Math.max(a, s.sec / 60), 0);
+}
+
+/* 今日中断次数 */
+function interruptsToday() {
+  const d0 = startOfDay(Date.now());
+  return store.interrupts.filter((t) => t >= d0).length;
+}
+
+/* 任务池：level(lv) 用于按等级放大难度 */
+const QUEST_POOL = [
+  { id: "visit", icon: "🌐", diff: "easy", title: () => "打开番茄钟签到",
+    hint: () => firstVisitToday ? "今天首次打开，签到成功 🌱" : `今天已打开 ${visitsToday()} 次`,
+    goal: () => 1, cur: () => Math.min(1, visitsToday()), unit: "次" },
+  { id: "focus-count", icon: "🍅", diff: "normal", title: (lv) => `完成 ${qFocusCount(lv)} 个番茄`,
+    hint: (lv) => `今日已完成 ${countToday()} 个`,
+    goal: (lv) => qFocusCount(lv), cur: () => countToday(), unit: "个" },
+  { id: "focus-minutes", icon: "⏱", diff: "normal", title: (lv) => `专注满 ${qMinutes(lv)} 分钟`,
+    hint: () => `今日已专注 ${Math.round(minutesToday())} 分钟`,
+    goal: (lv) => qMinutes(lv), cur: () => Math.round(minutesToday()), unit: "分" },
+  { id: "multi-mode", icon: "🎨", diff: "normal", title: () => "用 2 种不同模式各完成一次",
+    hint: () => `今日已用到 ${distinctModesToday()} 种模式`,
+    goal: () => Math.min(2, Math.max(2, store.modes.length)), cur: () => distinctModesToday(), unit: "种" },
+  { id: "long-session", icon: "🧱", diff: "hard", title: (lv) => `完成一次 ≥${qLong(lv)} 分钟的深度专注`,
+    hint: () => `今日最长一次 ${Math.round(longestToday())} 分钟`,
+    goal: (lv) => qLong(lv), cur: () => Math.round(longestToday()), unit: "分" },
+  { id: "early-bird", icon: "🌅", diff: "hard", title: () => "在 9 点前完成一个番茄",
+    hint: (lv) => { const h = earliestFocusHourToday(); return h === null ? "今日还没有完成的番茄" : `今日最早 ${pad(h)}:00`; },
+    goal: () => 1, cur: () => { const h = earliestFocusHourToday(); return h !== null && h < 9 ? 1 : 0; }, unit: "次" },
+  { id: "no-interrupt", icon: "🛡", diff: "hard", title: (lv) => `完成 ${qFocusCount(lv)} 个番茄且不被打断`,
+    hint: () => interruptsToday() ? `今日已被打断 ${interruptsToday()} 次` : "今日还没有被打断，保持住",
+    goal: (lv) => qFocusCount(lv), cur: () => (interruptsToday() ? 0 : countToday()), unit: "个" },
+  { id: "streak-keep", icon: "🔥", diff: "easy", title: () => "保持连续打卡",
+    hint: () => `当前连续 ${streak()} 天`,
+    goal: () => 1, cur: () => (streak() >= 1 ? 1 : 0), unit: "天" },
+  { id: "goal-hit", icon: "🎯", diff: "epic", title: (lv) => `达成本日目标 ${store.settings.dailyGoal || 8} 个番茄`,
+    hint: (lv) => `目标 ${store.settings.dailyGoal || 8} 个，已完成 ${countToday()} 个`,
+    goal: () => (store.settings.dailyGoal || 8), cur: () => countToday(), unit: "个" },
+  { id: "marathon", icon: "🏔", diff: "epic", title: (lv) => `累计专注满 ${qMarathon(lv)} 分钟`,
+    hint: () => `今日已专注 ${Math.round(minutesToday())} 分钟`,
+    goal: (lv) => qMarathon(lv), cur: () => Math.round(minutesToday()), unit: "分" },
+];
+
+function qFocusCount(lv) { return Math.min(14, 2 + Math.floor(lv / 2)); }
+function qMinutes(lv) { return Math.min(240, 25 + lv * 10); }
+function qLong(lv) { return Math.min(90, 25 + lv * 5); }
+function qMarathon(lv) { return Math.min(360, 60 + lv * 20); }
+
+/* 每日任务：按日期做确定性抽取，保证一天之内稳定不变 */
+const DAILY_QUEST_COUNT = 5;
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+/* 以日期为种子做确定性洗牌（mulberry32） */
+function seededPick(seedStr, n) {
+  let a = hashStr(seedStr);
+  const rnd = () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pool = QUEST_POOL.slice();
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const picked = pool.slice(0, n);
+  // 「访问网页」是每日固定项（用户明确要求），始终保留
+  const visit = QUEST_POOL.find((q) => q.id === "visit");
+  if (visit && !picked.includes(visit)) picked[picked.length - 1] = visit;
+  return picked;
+}
+
+function todayQuests() {
+  const lv = levelOf(xp());
+  const day = questDay();
+  return seededPick(dayKey(Date.now()), DAILY_QUEST_COUNT).map((q) => {
+    const goal = q.goal(lv);
+    const cur = Math.min(goal, q.cur(lv));
+    const done = cur >= goal;
+    return {
+      id: q.id, icon: q.icon, diff: q.diff, done,
+      claimed: day.claimed.includes(q.id),
+      goal, cur, unit: q.unit,
+      pct: goal > 0 ? Math.min(100, (cur / goal) * 100) : 100,
+      xp: QUEST_XP[q.diff] || 20,
+      title: q.title(lv), hint: q.hint(lv),
+    };
+  });
+}
+
+/* 领取单个任务奖励；返回获得的 XP */
+function claimQuest(id) {
+  const q = todayQuests().find((x) => x.id === id);
+  if (!q || !q.done || q.claimed) return 0;
+  questDayMut().claimed.push(id);
+  store.questXp = (store.questXp || 0) + q.xp;
+  save();
+  return q.xp;
+}
 
 /* ---------- 渲染 ---------- */
 const RING_C = 2 * Math.PI * 146;
@@ -389,12 +638,41 @@ function jrCreateChip(mode) {
 function jrMeasure() {
   if (!jrChips.length) return;
   const group = $("modeChips");
+  const bar = group.parentElement || group;
   jrWidths = jrChips.map((c) => c.el.offsetWidth);
   const chipH = jrChips[0].el.offsetHeight || 36;
   const maxW = Math.max(0, ...jrWidths);
   const C = JR_CFG;
+  // 最坏情况下选中项把紧邻的模式向外挤开的距离（与 jrApply 的 push 公式一致）。
+  // 「＋ 模式」按钮不会跟着位移，所以左侧预留一份挤开量，避免最后一个模式被挤过来
+  // 时压到按钮上（实测不预留会重叠约 1px）。
+  const shift = (maxW * C.swell) / 2 + C.barge;
   group.style.setProperty("--jr-pad-x", `${Math.ceil((maxW * C.swell * 1.3) / 2 + C.barge) + 2}px`);
   group.style.setProperty("--jr-pad-y", `${Math.ceil((chipH * C.swell) / 2) + 2}px`);
+  // 设在父级（.mode-bar）上，「＋ 模式」作为兄弟节点也能继承到
+  bar.style.setProperty("--jr-shift-room", `${Math.ceil(shift)}px`);
+  // 把放大倍数交给 CSS：换行时纵向间距要按它补偿，避免两行贴得和行内空格一样近
+  group.style.setProperty("--jr-swell", `${C.swell}`);
+  jrAlignAdd();
+}
+/* 「＋ 模式」只留了左侧 margin（用于避开被挤过来的模式），因此它**独占一行**时
+   会相对居中右偏 marginLeft/2。居中在两种情形下对 margin 的要求互相矛盾
+   （同行要求右侧 margin 为 0，独占要求左右相等），无法同时满足，故这里对
+   「独占一行」的情形做纯视觉补偿（translate，不参与布局，不会引起重排抖动）。 */
+function jrAlignAdd() {
+  const add = $("addModeBtn");
+  if (!add) return;
+  const group = $("modeChips");
+  if (!jrChips.length || !group.contains(add)) {
+    add.style.setProperty("--jr-alone-shift", "0px");
+    return;
+  }
+  // offsetTop 是布局值（不含 transform），与最后一个模式同一行则说明并未独占一行
+  const sameRow = Math.abs(add.offsetTop - jrChips[jrChips.length - 1].el.offsetTop) < 2;
+  const room = parseFloat(getComputedStyle(add).marginLeft) || 0;
+  // margin-left: M 时，flex 居中的是「margin 盒」，因此按钮实际中心落在容器中心
+  // 右侧 M/2 处，需向左移回 M/2。
+  add.style.setProperty("--jr-alone-shift", sameRow ? "0px" : `${(-room / 2).toFixed(1)}px`);
 }
 function jrApply(sel, instant) {
   if (!jrChips.length) return;
@@ -423,13 +701,18 @@ function jrApply(sel, instant) {
 
 function renderChips() {
   const wrap = $("modeChips");
+  const addBtn = $("addModeBtn");
   const sig = store.modes.map((m) => `${m.id}:${m.name}:${m.focus}:${m.brk}:${m.color}:${m.custom}`).join("|");
   const selIdx = Math.max(0, store.modes.findIndex((m) => m.id === store.activeModeId));
   let rebuilt = false;
   if (sig !== jrSig) {
     jrSig = sig;
+    // 重建前先移出「＋ 模式」，避免被 innerHTML 清掉（保留其事件绑定）
+    if (addBtn && addBtn.parentElement === wrap) wrap.removeChild(addBtn);
     wrap.innerHTML = "";
     jrChips = store.modes.map((m) => { const c = jrCreateChip(m); wrap.appendChild(c.el); return c; });
+    // 追加到所有模式按钮之后，跟随模式按钮一起换行
+    if (addBtn) wrap.appendChild(addBtn);
     jrLastSel = -1;
     rebuilt = true;
   }
@@ -461,54 +744,69 @@ function switchMode(id) {
 
 function renderLevel() {
   const x = xp(), lv = levelOf(x);
-  const cur = xpNeeded(lv), next = xpNeeded(lv + 1);
-  const pct = next > cur ? Math.min(100, ((x - cur) / (next - cur)) * 100) : 100;
+  const maxed = lv >= LEVEL_CAP;
+  const cur = xpNeeded(lv);
+  // 满级时不存在下一级：不能拿 xpNeeded(101) 当目标，否则会显示一个永远到不了的进度
+  const next = maxed ? cur : xpNeeded(lv + 1);
+  const pct = maxed ? 100 : next > cur ? Math.min(100, ((x - cur) / (next - cur)) * 100) : 100;
   $("levelBadge").textContent = lv;
   $("levelName").textContent = `Lv.${lv} ${levelName(lv)}`;
-  $("levelXp").textContent = `${x} / ${next} XP`;
-  $("levelNext").textContent = `下一级：${levelName(lv + 1)}`;
+  $("levelXp").textContent = maxed ? `${x} XP · 已满级` : `${x} / ${next} XP`;
+  $("levelNext").textContent = maxed ? "已达最高等级 🎉" : `下一级：${levelName(lv + 1)}`;
   $("levelFill").style.width = pct + "%";
-  $("brandLevel").textContent = `Lv.${lv} ${levelName(lv)}`;
+  $("brandLevelFull").textContent = `Lv.${lv} ${levelName(lv)}`;
+  $("brandLevelShort").textContent = `Lv.${lv}`;
+  $("brandLevel").title = `Lv.${lv} ${levelName(lv)} · 点击查看全部等级`;
+  // 等级页面打开时同步刷新，避免领取任务后看到过期数据
+  if (lvOpen) renderLevelPage();
 }
 
-/* 升级任务面板（默认折叠，只渲染数据，展开状态由用户控制） */
+/* 每日任务面板（默认折叠，只渲染数据，展开状态由用户控制）
+   每天 5 个任务，完成后点「领取」把 XP 计入等级。 */
+const DIFF_LABEL = { easy: "简单", normal: "普通", hard: "困难", epic: "史诗" };
 function renderTasks() {
   const panel = $("taskPanelInner");
-  if (!$("taskPanel").classList.contains("open")) return; // 折叠时不刷新，展开时立即更新
-  const x = xp(), lv = levelOf(x);
-  const cur = xpNeeded(lv), next = xpNeeded(lv + 1);
-  const goal = store.settings.dailyGoal || 8;
-  const today = countToday();
-  const st = streak();
-  // 下一个打卡里程碑
-  const milestones = [3, 7, 14, 21, 30, 60, 100, 365];
-  const milestone = milestones.find((m) => m > st) || Math.ceil((st + 1) / 100) * 100;
+  const list = todayQuests();
+  const doneN = list.filter((q) => q.done).length;
+  const claimable = list.filter((q) => q.done && !q.claimed).length;
 
-  const tasks = [
-    { icon: "⚡", title: `积累到 ${next} XP（升到 Lv.${lv + 1}）`,
-      hint: `还差 ${Math.max(0, next - x)} XP，约 ${Math.max(1, Math.ceil((next - x) / 30))} 个番茄`,
-      pct: next > cur ? Math.min(100, ((x - cur) / (next - cur)) * 100) : 100,
-      val: `${x}/${next}` },
-    { icon: "🍅", title: `今日完成 ${goal} 个番茄`,
-      hint: `今日目标 ${goal} 个，完成后可保持打卡`,
-      pct: Math.min(100, (today / goal) * 100),
-      val: `${today}/${goal}` },
-    { icon: "🔥", title: `连续打卡达到 ${milestone} 天`,
-      hint: `当前连续 ${st} 天`,
-      pct: Math.min(100, (st / milestone) * 100),
-      val: `${st}/${milestone}` },
-  ];
+  // 折叠状态下也要更新徽标
+  const badge = $("taskBadge");
+  if (badge) {
+    badge.textContent = claimable ? `${claimable} 可领取` : `${doneN}/${list.length}`;
+    badge.classList.toggle("ready", claimable > 0);
+    badge.classList.toggle("hidden", false);
+  }
+  if (!$("taskPanel").classList.contains("open")) return; // 折叠时不刷新 DOM
 
-  panel.innerHTML = tasks.map((t) => `
-    <div class="task-row${t.pct >= 100 ? " done" : ""}">
-      <span class="task-icon">${t.pct >= 100 ? "✅" : t.icon}</span>
-      <div class="task-body">
-        <div class="task-title">${esc(t.title)}</div>
-        <div class="task-hint">${esc(t.hint)}</div>
-        <div class="task-bar"><div class="task-bar-fill" style="width:${t.pct}%"></div></div>
-      </div>
-      <span class="task-pct">${t.pct >= 100 ? "完成" : Math.floor(t.pct) + "%"}</span>
-    </div>`).join("");
+  const resetHint = `每日 0 点刷新 · 今日已完成 ${doneN}/${list.length}`;
+  panel.innerHTML =
+    `<div class="task-note">${esc(resetHint)}</div>` +
+    list.map((t, i) => {
+      const state = t.claimed ? "已领取" : t.done ? "领取" : `${t.cur}/${t.goal} ${t.unit}`;
+      const cls = `task-row${t.done ? " done" : ""}${t.claimed ? " claimed" : ""}`;
+      return `
+      <div class="${cls}" data-quest="${t.id}" style="animation-delay:${(i * 0.05).toFixed(2)}s">
+        <span class="task-icon">${t.claimed ? "🎁" : t.done ? "✅" : t.icon}</span>
+        <div class="task-body">
+          <div class="task-title">${esc(t.title)} <span class="task-diff diff-${t.diff}">${DIFF_LABEL[t.diff]}</span></div>
+          <div class="task-hint">${esc(t.hint)} · +${t.xp} XP</div>
+          <div class="task-bar"><div class="task-bar-fill" style="width:${t.pct}%"></div></div>
+        </div>
+        ${t.done && !t.claimed
+          ? `<button type="button" class="task-claim" data-claim="${t.id}">${state}</button>`
+          : `<span class="task-pct">${t.claimed ? "已领" : Math.floor(t.pct) + "%"}</span>`}
+      </div>`;
+    }).join("");
+
+  panel.querySelectorAll("[data-claim]").forEach((btn) => {
+    btn.onclick = () => {
+      const got = claimQuest(btn.dataset.claim);
+      if (!got) return;
+      toast(`任务完成！+${got} XP 🎉`);
+      refreshAll();
+    };
+  });
 }
 
 function renderOverview() {
@@ -590,22 +888,188 @@ function drawChart(from, def) {
   });
 }
 
+/* ---------- 最近记录：可点击看详情 + 多选删除 ---------- */
+const HIST = { manage: false, expanded: false, sel: new Set(), openId: null };
+const HIST_PREVIEW = 14; // 折叠时最多显示条数
+
+/* 按时间倒序（新的在前）。
+   不依赖数组顺序：云端同步合并后的数据顺序未必是写入顺序，
+   按 ts 排序才能保证「最近记录」真的按时间排列。 */
+function historySorted() {
+  return store.sessions.slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+function fmtAbs(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function dayLabel(ts) {
+  const now = Date.now();
+  if (ts >= startOfDay(now)) return "今天";
+  if (ts >= startOfDay(now) - 86400000) return "昨天";
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}-${pad(d.getDate())}`;
+}
+const STATUS_META = {
+  completed: { text: "完成", cls: "ok", ico: "🍅" },
+  interrupted: { text: "打断", cls: "bad", ico: "⚠️" },
+  stopped: { text: "停止", cls: "bad", ico: "⏹" },
+};
+const statusMeta = (s) => STATUS_META[s] || STATUS_META.stopped;
+
 function renderHistory() {
   const box = $("history");
-  const list = store.sessions.slice(-14).reverse();
-  if (!list.length) {
+  const all = historySorted(); // 新的在前
+  const list = HIST.expanded ? all : all.slice(0, HIST_PREVIEW);
+
+  // 清理已不存在的选中项（例如被删除后又刷新）
+  const alive = new Set(all.map((s) => s.id));
+  HIST.sel.forEach((id) => { if (!alive.has(id)) HIST.sel.delete(id); });
+
+  $("historyCount").textContent = all.length ? `共 ${all.length} 条` : "";
+  const expandBtn = $("historyExpandBtn");
+  expandBtn.classList.toggle("hidden", all.length <= HIST_PREVIEW);
+  expandBtn.textContent = HIST.expanded ? "收起" : `展开全部 (${all.length})`;
+  $("historyManageBtn").classList.toggle("on", HIST.manage);
+  $("historyManageBtn").textContent = HIST.manage ? "完成" : "管理";
+  $("historyBar").classList.toggle("hidden", !HIST.manage);
+  $("history").classList.toggle("expanded", HIST.expanded);
+
+  if (!all.length) {
     box.innerHTML = '<div class="history-empty">还没有记录，完成一次专注后这里会出现历史 🍅</div>';
+    syncHistoryBar();
     return;
   }
-  const now = Date.now();
+
   box.innerHTML = list.map((s) => {
     const d = new Date(s.ts);
-    const day = s.ts >= startOfDay(now) ? "今天" : s.ts >= startOfDay(now) - 86400000 ? "昨天" : `${d.getMonth() + 1}-${pad(d.getDate())}`;
-    const tag = s.status === "completed" ? '<span class="h-tag ok">完成</span>'
-      : s.status === "interrupted" ? '<span class="h-tag bad">打断</span>'
-      : '<span class="h-tag bad">停止</span>';
-    return `<div class="h-row"><span class="h-dot"></span><span class="h-main">${esc(s.m)} · ${fmtDur(s.sec / 60)}</span>${tag}<span class="h-time">${day} ${pad(d.getHours())}:${pad(d.getMinutes())}</span></div>`;
-  }).join("");
+    const meta = statusMeta(s.status);
+    const checked = HIST.sel.has(s.id) ? " checked" : "";
+    const selCls = HIST.sel.has(s.id) ? " selected" : "";
+    const openCls = HIST.openId === s.id ? " active" : "";
+    // 编辑模式：整行点击切换选中；普通模式：整行点击打开详情
+    return `<div class="h-row${selCls}${openCls}" data-id="${esc(s.id)}" tabindex="0" role="button"
+      aria-label="${esc(s.m + " " + fmtDur(s.sec / 60) + " " + meta.text)}">
+      ${HIST.manage ? `<input type="checkbox" class="h-check"${checked} aria-label="选择这条记录">` : '<span class="h-dot"></span>'}
+      <span class="h-main">${esc(s.m)} · ${fmtDur(s.sec / 60)}</span>
+      <span class="h-tag ${meta.cls}">${meta.text}</span>
+      <span class="h-time">${dayLabel(s.ts)} ${pad(d.getHours())}:${pad(d.getMinutes())}</span>
+    </div>`;
+  }).join("") + (!HIST.expanded && all.length > HIST_PREVIEW
+    ? `<button type="button" class="mini-btn history-more" id="historyMoreBtn">还有 ${all.length - HIST_PREVIEW} 条，展开查看</button>`
+    : "");
+
+  syncHistoryBar();
+  bindHistoryRows();
+}
+
+function syncHistoryBar() {
+  const n = HIST.sel.size;
+  $("historySelCount").textContent = `已选 ${n} 条`;
+  $("historyDeleteBtn").disabled = n === 0;
+  // 与渲染用的集合保持一致，否则「全选」状态会与实际勾选不符
+  const sorted = historySorted();
+  const list = HIST.expanded ? sorted : sorted.slice(0, HIST_PREVIEW);
+  const ids = list.map((s) => s.id);  const allSel = ids.length > 0 && ids.every((id) => HIST.sel.has(id));
+  const allBox = $("historyAll");
+  allBox.checked = allSel;
+  allBox.indeterminate = !allSel && ids.some((id) => HIST.sel.has(id));
+}
+
+function bindHistoryRows() {
+  const box = $("history");
+  box.querySelectorAll(".h-row").forEach((row) => {
+    const id = row.dataset.id;
+    row.onclick = (e) => {
+      if (HIST.manage) {
+        // 编辑模式：点复选框本身按浏览器默认行为走，其余位置切换选中
+        if (e.target.classList.contains("h-check")) return;
+        toggleHistSel(id);
+      } else {
+        openRecord(id);
+      }
+    };
+    row.onkeydown = (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      if (HIST.manage) toggleHistSel(id); else openRecord(id);
+    };
+  });
+  box.querySelectorAll(".h-check").forEach((cb) => {
+    cb.onclick = (e) => { e.stopPropagation(); toggleHistSel(cb.closest(".h-row").dataset.id); };
+  });
+  const more = $("historyMoreBtn");
+  if (more) more.onclick = () => { HIST.expanded = true; renderHistory(); };
+}
+
+function toggleHistSel(id) {
+  if (HIST.sel.has(id)) HIST.sel.delete(id); else HIST.sel.add(id);
+  const row = document.querySelector(`.h-row[data-id="${CSS.escape(id)}"]`);
+  if (row) {
+    row.classList.toggle("selected", HIST.sel.has(id));
+    const cb = row.querySelector(".h-check");
+    if (cb) cb.checked = HIST.sel.has(id);
+  }
+  syncHistoryBar();
+}
+
+function setHistManage(on) {
+  HIST.manage = on;
+  if (!on) HIST.sel.clear();
+  renderHistory();
+}
+
+function deleteHistoryIds(ids) {
+  if (!ids.length) return 0;
+  const set = new Set(ids);
+  const before = store.sessions.length;
+  store.sessions = store.sessions.filter((s) => !set.has(s.id));
+  HIST.sel.clear();
+  save();
+  return before - store.sessions.length;
+}
+
+/* 记录详情 */
+function openRecord(id) {
+  const s = store.sessions.find((x) => x.id === id);
+  if (!s) return;
+  HIST.openId = id;
+  const meta = statusMeta(s.status);
+  const d = new Date(s.ts);
+  $("recIco").textContent = meta.ico;
+  $("recMain").textContent = `${s.m} · ${fmtDur(s.sec / 60)}`;
+  $("recSub").textContent = `${meta.text} · ${dayLabel(s.ts)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  $("recGrid").innerHTML = [
+    ["模式", esc(s.m)],
+    ["状态", meta.text],
+    ["专注时长", fmtDur(s.sec / 60)],
+    ["折算分钟", Math.round(s.sec / 60) + " 分钟"],
+    ["日期", `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`],
+    ["时间", `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`],
+    ["星期", "星期" + "日一二三四五六"[d.getDay()]],
+    ["完整时间", fmtAbs(s.ts)],
+  ].map(([k, v]) => `<div class="rec-cell"><div class="rec-k">${k}</div><div class="rec-v">${v}</div></div>`).join("");
+  $("recordModal").classList.remove("hidden");
+}
+
+function closeRecord() {
+  HIST.openId = null;
+  const m = $("recordModal");
+  document.querySelectorAll(".h-row.active").forEach((r) => r.classList.remove("active"));
+  if (m.classList.contains("hidden")) return;
+  if (JR_REDUCED) { m.classList.add("hidden"); return; }
+  m.classList.add("closing");
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    m.removeEventListener("animationend", onEnd);
+    m.classList.add("hidden");
+    m.classList.remove("closing");
+  };
+  const onEnd = (e) => { if (e.target === m) finish(); };
+  m.addEventListener("animationend", onEnd);
+  setTimeout(finish, 400);
 }
 
 function refreshAll() {
@@ -664,6 +1128,34 @@ function pokeTomato(e) {
   const layerRect = layer.getBoundingClientRect();
   const cx = (e ? e.clientX : rect.left + rect.width / 2) - layerRect.left;
   const cy = (e ? e.clientY : rect.top + rect.height / 2) - layerRect.top;
+
+  /* 亮光跟随点击处
+     根因：光晕原本是固定的 <ellipse cx=100 cy=118>，径向渐变也用百分比（相对包围盒），
+     所以无论点哪里，亮光都长在番茄正中间。
+     修复：把点击的屏幕坐标换算成 SVG 用户坐标，同时移动光斑椭圆与渐变中心，
+     让亮光真的从手指按下的地方亮起来。 */
+  if (e) {
+    const svg = el.querySelector("svg");
+    if (svg && svg.getScreenCTM) {
+      try {
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX; pt.y = e.clientY;
+        const u = pt.matrixTransform(svg.getScreenCTM().inverse());
+        // 限制在番茄身体范围内，避免光斑跑到叶子上
+        const gx = Math.max(30, Math.min(170, u.x));
+        const gy = Math.max(54, Math.min(184, u.y));
+        const glow = svg.querySelector(".tv-glow");
+        if (glow) {
+          glow.setAttribute("cx", gx.toFixed(1));
+          glow.setAttribute("cy", gy.toFixed(1));
+          // 动画以 transform-origin 为缩放中心，必须一起挪，否则光斑仍从中心扩散
+          glow.style.transformOrigin = `${gx.toFixed(1)}px ${gy.toFixed(1)}px`;
+        }
+        const grad = svg.querySelector("#tvGlowGrad");
+        if (grad) { grad.setAttribute("cx", gx.toFixed(1)); grad.setAttribute("cy", gy.toFixed(1)); }
+      } catch (_) { /* 取不到矩阵时保持默认位置 */ }
+    }
+  }
 
   // 冲击波：一圈柔和光涟漪从点击点扩散消失（先清旧的，防连点残留）
   layer.querySelectorAll(".tv-shock").forEach((s) => s.remove());
@@ -779,6 +1271,98 @@ function closeTomato() {
   setTimeout(() => { if (tvClosing) finish(); }, 600); // 动画事件丢失时兜底
 }
 
+/* ---------- 等级页面（顶栏等级入口） ----------
+   只读展示「全部等级 + 到达每一级所需经验」。
+   刻意不碰任何等级逻辑：所有数值都直接取自 xpNeeded() / levelOf() / xp()，
+   等级公式、等级名、等级卡片的表现都保持原样。 */
+const LV_MAX = LEVEL_CAP; // 与 levelOf() 上限共用同一常量，避免两处不一致
+let lvOpen = false, lvClosing = false;
+
+/* 行内已有等级数字，页内只显示纯名字（不再拼接 Lv.N，避免「Lv.20 达人 Lv.20」） */
+function levelCatalogName(lv) { return LEVEL_NAMES[lv - 1] || `Lv.${lv}`; }
+
+function renderLevelPage() {
+  const x = xp(), lv = levelOf(x);
+  const base = xpNeeded(lv);
+  // LEVEL_CAP 是上限：满级时不存在「下一级」，不能沿用 xpNeeded(cap+1)
+  // 造出一个不存在的假阈值（否则进度条永远差一截、文案会写出 Lv.101）
+  const maxed = lv >= LV_MAX;
+  const next = maxed ? base : xpNeeded(lv + 1);
+  const pct = maxed ? 100 : next > base ? Math.min(100, ((x - base) / (next - base)) * 100) : 100;
+
+  $("levelNow").innerHTML = `
+    <div class="lv-now-badge">${lv}</div>
+    <div class="lv-now-meta">
+      <div class="lv-now-name">Lv.${lv} ${esc(levelCatalogName(lv))}</div>
+      <div class="lv-now-xp">${maxed
+        ? `累计 ${x} XP · 已达最高等级 🎉`
+        : `${x} / ${next} XP · 还差 ${Math.max(0, next - x)} XP 升级`}</div>
+      <div class="lv-now-track"><div class="lv-now-fill" style="width:${pct}%"></div></div>
+    </div>`;
+
+  const rows = [];
+  for (let n = 1; n <= LV_MAX; n++) {
+    const need = xpNeeded(n);                       // 到达第 n 级的累计经验
+    const step = n <= 1 ? 0 : need - xpNeeded(n - 1); // 从上一级到本级所需的增量
+    const state = n === lv ? "now" : n < lv ? "done" : "";
+    const tag = n === lv ? '<span class="lv-row-tag now">当前</span>'
+      : n < lv ? '<span class="lv-row-tag done">已达成</span>' : "";
+    rows.push(`<div class="lv-row ${state}">
+      <div class="lv-row-badge">${n}</div>
+      <div class="lv-row-name">${esc(levelCatalogName(n))}${tag}</div>
+      <div class="lv-row-xp">${need.toLocaleString()} XP<small>${n <= 1 ? "起点" : "+" + step.toLocaleString() + " XP"}</small></div>
+    </div>`);
+  }
+  $("levelList").innerHTML = rows.join("");
+  $("levelListNote").textContent = `共 ${LV_MAX} 级`;
+}
+
+/* 当前等级可能在第 40 级开外，打开后把它带到视野里。
+   注意：只在「确实看不见」时才滚动。早先无条件居中，低等级会滚出几十像素，
+   结果概览卡片被吸顶表头切成一半，看起来像渲染坏了。 */
+function scrollLevelToCurrent() {
+  const view = $("levelView");
+  const row = view.querySelector(".lv-row.now");
+  if (!row) return;
+  const head = view.querySelector(".lv-head");
+  const headH = head ? head.offsetHeight : 0;
+  const vr = view.getBoundingClientRect(), rr = row.getBoundingClientRect();
+  const top = vr.top + headH + 8;            // 表头下方的安全边界
+  const bottom = vr.bottom - 8;
+  if (rr.top >= top && rr.bottom <= bottom) return; // 已经完整可见 → 不动
+  view.scrollTop += rr.top - top;             // 否则贴到表头下方
+}
+
+function openLevelPage() {
+  if (lvOpen) return;
+  lvOpen = true; lvClosing = false;
+  renderLevelPage();
+  const v = $("levelView");
+  v.classList.remove("closing", "hidden"); // 若上次退出动画被打断，先恢复初始状态
+  v.scrollTop = 0;
+  requestAnimationFrame(() => {
+    scrollLevelToCurrent();
+    $("levelBackBtn").focus({ preventScroll: true });
+  });
+}
+
+function closeLevelPage() {
+  if (!lvOpen || lvClosing) return;
+  lvOpen = false; lvClosing = true;
+  const v = $("levelView");
+  const finish = () => {
+    v.removeEventListener("animationend", onEnd);
+    v.classList.add("hidden");
+    v.classList.remove("closing");
+    lvClosing = false;
+  };
+  const onEnd = (e) => { if (e.target === v) finish(); };
+  if (JR_REDUCED) { finish(); return; }
+  v.classList.add("closing");
+  v.addEventListener("animationend", onEnd);
+  setTimeout(() => { if (lvClosing) finish(); }, 500); // 动画事件丢失时兜底
+}
+
 /* ---------- 模式弹窗 ---------- */
 const PALETTE = ["#ef4444", "#f59e0b", "#eab308", "#10b981", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"];
 let editingMode = null, pickedColor = PALETTE[0];
@@ -818,7 +1402,8 @@ function renderPalette() {
 }
 
 /* ---------- Kibo UI 风格取色器（HSL 模型，仿 Figma） ---------- */
-const KP = { h: 0, s: 100, l: 50, a: 100, open: false, dragging: null, outside: null };
+const KP = { h: 0, s: 100, l: 50, a: 100, open: false, dragging: null, outside: null,
+             captured: undefined, scrollTarget: null, onScroll: null };
 
 // 颜色转换
 function kpHslToRgb(h, s, l) {
@@ -861,22 +1446,57 @@ const KPapi = {
     const hue = $("kpHue");
     const alpha = $("kpAlpha");
 
+    /* 拖动跟踪
+       根因：旧实现只在滑块自身监听 pointerup/pointercancel。一旦指针在滑块之外松开
+       （手机上很常见：手指滑出色条后抬起，或系统打断），KP.dragging 不会被清空，
+       之后鼠标/手指「只是划过」色条就会继续改色 —— 看上去就是误触。
+       修复：指针捕获 + 在 window 上兜底监听 pointerup/pointercancel，确保一定收尾。*/
+    const endDrag = () => {
+      if (!KP.dragging) return;
+      const el = KP.dragging;
+      KP.dragging = null;
+      const id = KP.captured;
+      KP.captured = undefined;
+      if (id !== undefined) { try { el.releasePointerCapture(id); } catch (_) {} }
+    };
     const track = (el, fn) => {
       el.addEventListener("pointerdown", (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
         e.preventDefault();
+        e.stopPropagation();
         KP.dragging = el;
+        KP.captured = e.pointerId;
         try { el.setPointerCapture(e.pointerId); } catch (_) {}
         fn(e);
       });
-      el.addEventListener("pointermove", (e) => { if (KP.dragging === el) fn(e); });
-      el.addEventListener("pointerup", () => { KP.dragging = null; });
-      el.addEventListener("pointercancel", () => { KP.dragging = null; });
+      el.addEventListener("pointermove", (e) => {
+        if (KP.dragging !== el) return;
+        if (KP.captured !== undefined && e.pointerId !== KP.captured) return;
+        e.preventDefault();
+        fn(e);
+      });
+      // 指针在元素外松开时，pointerup 会派发到捕获元素；pointercancel 覆盖系统打断
+      el.addEventListener("pointerup", endDrag);
+      el.addEventListener("pointercancel", endDrag);
+      el.addEventListener("lostpointercapture", endDrag);
+      // 桌面上鼠标移出后松开：兜底立即结束拖动状态
+      el.addEventListener("pointerleave", (e) => {
+        if (KP.dragging === el && e.buttons === 0) endDrag();
+      });
     };
+    // 全局兜底：任何地方松开都结束拖动（防止 dragging 卡住导致后续划过改色）
+    window.addEventListener("pointerup", endDrag, true);
+    window.addEventListener("pointercancel", endDrag, true);
+    window.addEventListener("blur", endDrag);
+
     const pos = (e, el) => {
       const r = el.getBoundingClientRect();
       return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
               Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
     };
+
+    // 横条类控件只关心横向位置；纵向漂移不该改色（手指略微上下移动很常见）
+    const posX = (e, el) => pos(e, el)[0];
 
     // 饱和度 / 亮度方块（kibo: saturation = x*100, lightness = topL*(1-y)）
     track(sel, (e) => {
@@ -886,10 +1506,9 @@ const KPapi = {
       KP.l = topL * (1 - y);
       this.sync();
     });
-    // 色相条
-    track(hue, (e) => { KP.h = pos(e, hue)[0] * 360; this.sync(); });
-    // 透明度条（横向）
-    track(alpha, (e) => { KP.a = pos(e, alpha)[0] * 100; this.sync(); });
+    // 色相条 / 透明度条：只取横向比例，避免纵向抖动改色
+    track(hue, (e) => { KP.h = posX(e, hue) * 360; this.sync(); });
+    track(alpha, (e) => { KP.a = posX(e, alpha) * 100; this.sync(); });
 
     // HEX 输出可编辑
     $("kpHex").addEventListener("change", (e) => {
@@ -963,35 +1582,96 @@ const KPapi = {
     const dot = $("customColorDot");
     if (dot) dot.setAttribute("aria-expanded", String(KP.open));
     if (KP.open && dot) {
-      // 定位：浮层锚定在色点下方，箭头指向色点；贴边时自动内收
-      const r = dot.getBoundingClientRect();
-      const pw = Math.min(300, window.innerWidth - 24);
-      let left = r.left + r.width / 2 - pw / 2;
-      left = Math.max(12, Math.min(left, window.innerWidth - pw - 12));
-      const arrowX = Math.max(16, Math.min(r.left + r.width / 2 - left - 7, pw - 30));
-      panel.style.left = `${left}px`;
-      panel.style.setProperty("--kp-arrow-x", `${arrowX}px`);
-      // 色点下方放不下时翻转到上方
-      const ph = panel.offsetHeight;
-      if (r.bottom + 10 + ph > window.innerHeight && r.top > ph + 10) {
-        panel.style.top = `${r.top - ph - 10}px`;
-        panel.dataset.arrow = "bottom";
-      } else {
-        panel.style.top = `${r.bottom + 10}px`;
-        panel.dataset.arrow = "top";
-      }
+      this.reposition();
       this.setColor(pickedColor);
       this.sync();
+      // 弹窗滚动 / 窗口尺寸变化时跟随色点，否则面板会「飘」到保存按钮上把点击吃掉
+      KP.scrollTarget = dot.closest(".modal");
+      KP.onScroll = () => this.reposition();
+      if (KP.scrollTarget) KP.scrollTarget.addEventListener("scroll", KP.onScroll, { passive: true });
+      window.addEventListener("resize", KP.onScroll);
+      window.addEventListener("scroll", KP.onScroll, { passive: true, capture: true });
       // 点击外部自动收起（延迟绑定，避免点色点本身误关）
       setTimeout(() => {
         KP.outside = (e) => {
-          if (!panel.contains(e.target) && !(dot && dot.contains(e.target))) {
+          // 每次实时查询色点：renderPalette() 会重建色点 DOM，闭包里的旧引用会失效
+          const cur = $("customColorDot");
+          if (!panel.contains(e.target) && !(cur && cur.contains(e.target))) {
             KPapi.close();
           }
         };
         document.addEventListener("pointerdown", KP.outside, true);
       }, 0);
-    } else if (KP.outside) {
+    } else {
+      this.detach();
+    }
+  },
+
+  /* 跟随色点重新定位。
+     约束：面板绝不能盖住弹窗底部的「保存/取消」——色点上方或下方若只按视口空间
+     判断，面板会正好压在操作区上，用户点保存就像没反应。 */
+  reposition() {
+    const panel = $("kiboPicker");
+    const dot = $("customColorDot");
+    if (!KP.open || !dot || !panel) return;
+    const r = dot.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const pw = Math.min(300, vw - 24);
+    panel.style.width = pw + "px";
+    let left = r.left + r.width / 2 - pw / 2;
+    left = Math.max(12, Math.min(left, vw - pw - 12));
+    panel.style.left = `${left}px`;
+    const arrowX = Math.max(16, Math.min(r.left + r.width / 2 - left - 7, pw - 30));
+    panel.style.setProperty("--kp-arrow-x", `${arrowX}px`);
+
+    const ph = panel.offsetHeight;
+    // 弹窗操作区：面板若与之相交，就换到另一侧
+    const actions = document.querySelector("#modeModal .modal-actions");
+    const act = actions ? actions.getBoundingClientRect() : null;
+    const gap = 10;
+
+    const fitsBelow = r.bottom + gap + ph <= vh - 12;
+    const fitsAbove = r.top - gap - ph >= 12;
+
+    const overlapsActions = (top) => !!act && top < act.bottom && top + ph > act.top;
+    const belowTop = r.bottom + gap;
+    const aboveTop = r.top - gap - ph;
+
+    let mode;
+    if (fitsBelow && !overlapsActions(belowTop)) mode = "below";
+    else if (fitsAbove && !overlapsActions(aboveTop)) mode = "above";
+    else if (fitsBelow && fitsAbove) mode = overlapsActions(belowTop) ? "above" : "below";
+    else if (fitsBelow) mode = "below";
+    else if (fitsAbove) mode = "above";
+    else mode = null;
+
+    if (mode === "below") {
+      panel.style.top = `${belowTop}px`;
+      panel.dataset.arrow = "top";
+    } else if (mode === "above") {
+      panel.style.top = `${aboveTop}px`;
+      panel.dataset.arrow = "bottom";
+    } else {
+      // 上下都被操作区占住（矮屏）：贴视口，同时保证不压住操作区
+      let top = Math.max(12, Math.min(belowTop, vh - ph - 12));
+      if (overlapsActions(top)) {
+        top = act.top - gap - ph;
+        if (top < 12) top = Math.min(vh - ph - 12, act.bottom + gap);
+        top = Math.max(12, top);
+      }
+      panel.style.top = `${top}px`;
+      panel.dataset.arrow = top < r.top ? "bottom" : "top";
+    }
+  },
+
+  detach() {
+    if (KP.scrollTarget && KP.onScroll) KP.scrollTarget.removeEventListener("scroll", KP.onScroll);
+    if (KP.onScroll) {
+      window.removeEventListener("resize", KP.onScroll);
+      window.removeEventListener("scroll", KP.onScroll, { capture: true });
+    }
+    KP.scrollTarget = null; KP.onScroll = null;
+    if (KP.outside) {
       document.removeEventListener("pointerdown", KP.outside, true);
       KP.outside = null;
     }
@@ -1019,11 +1699,50 @@ function closeModeModal() {
   setTimeout(finish, 400); // 动画事件丢失时兜底
 }
 
+/* 校验失败反馈：给输入框描红 + 轻微闪一下，并聚焦第一个出错的框。
+   用「代号」防串扰：重复点击保存时，前一次的清理回调/动画监听不能把
+   后一次刚加上的红框提前清掉（否则连点两下红框会中途消失）。 */
+const invalidGen = new WeakMap();
+function flagInvalid(el) {
+  if (!el) return;
+  const gen = (invalidGen.get(el) || 0) + 1;
+  invalidGen.set(el, gen);
+  el.classList.remove("field-error");
+  void el.offsetWidth; // 强制重排，让动画能重复播放
+  el.classList.add("field-error");
+  el.setAttribute("aria-invalid", "true");
+  const clear = () => {
+    if (invalidGen.get(el) !== gen) return; // 已被更新的调用接管
+    el.classList.remove("field-error");
+    el.removeAttribute("aria-invalid");
+  };
+  el.addEventListener("animationend", clear, { once: true });
+  setTimeout(clear, 1600); // 动画事件丢失时兜底
+}
+
 function saveMode() {
   const name = ($("modeNameInput").value || "").trim().slice(0, 8);
-  const focus = Math.min(180, Math.max(1, parseInt($("modeFocusInput").value, 10) || 25));
-  const brk = Math.min(60, Math.max(1, parseInt($("modeBreakInput").value, 10) || 5));
-  if (!name) { toast("请输入模式名称"); return; }
+  const focusEl = $("modeFocusInput");
+  const brkEl = $("modeBreakInput");
+  const focusRaw = parseInt(focusEl.value, 10);
+  const brkRaw = parseInt(brkEl.value, 10);
+
+  // 0 / 空 / 非数字 都算无效：专注与休息必须 ≥ 1 分钟
+  const bad = [];
+  if (!Number.isFinite(focusRaw) || focusRaw < 1) bad.push(focusEl);
+  if (!Number.isFinite(brkRaw) || brkRaw < 1) bad.push(brkEl);
+  if (bad.length) {
+    bad.forEach(flagInvalid);
+    bad[0].focus();
+    toast("专注和休息都必须大于 0 分钟", { desc: "已用红框标出需要修改的输入框" });
+    return;
+  }
+  if (!name) { flagInvalid($("modeNameInput")); $("modeNameInput").focus(); toast("请输入模式名称"); return; }
+
+  const focus = Math.min(180, focusRaw);
+  const brk = Math.min(60, brkRaw);
+  focusEl.value = focus;
+  brkEl.value = brk;
   if (editingMode) {
     Object.assign(editingMode, { name, focus, brk, color: pickedColor });
     toast("模式已更新");
@@ -1042,6 +1761,33 @@ function deleteMode() {
   if (store.activeModeId === editingMode.id) { store.activeModeId = store.modes[0].id; setPhase("focus"); }
   save(); closeModeModal(); refreshAll();
   toast("模式已删除");
+}
+
+/* ---------- 通用确认弹窗 ----------
+   不用原生 confirm()：Chrome 在用户勾选「阻止此页面创建更多对话框」后会静默返回
+   false，导致「点了清空却没反应」，且没有任何提示。自绘弹窗不受该抑制影响。 */
+let confirmResolve = null;
+function askConfirm(text, { okText = "确定", title = "确认", danger = false } = {}) {
+  return new Promise((resolve) => {
+    // 已有未决确认：先把上一个当成取消，避免 Promise 永久挂起
+    if (confirmResolve) { confirmResolve(false); confirmResolve = null; }
+    confirmResolve = resolve;
+    $("confirmTitle").textContent = title;
+    $("confirmText").textContent = text;
+    const ok = $("confirmOkBtn");
+    ok.textContent = okText;
+    ok.classList.toggle("btn-danger", danger);
+    ok.classList.toggle("btn-primary", !danger);
+    $("confirmModal").classList.remove("hidden");
+    setTimeout(() => ok.focus(), 30);
+  });
+}
+function settleConfirm(val) {
+  const r = confirmResolve;
+  confirmResolve = null;
+  const m = $("confirmModal");
+  if (m && !m.classList.contains("hidden")) m.classList.add("hidden");
+  if (r) r(val);
 }
 
 /* ---------- 设置弹窗 ---------- */
@@ -1483,7 +2229,7 @@ function loadDefaults() {
     modes: DEFAULT_MODES.map((m) => ({ ...m })),
     activeModeId: "m-default",
     settings: { theme: "light", sound: true, autoBreak: false, autoFocus: false, wake: false, dailyGoal: 8 },
-    sessions: [], interrupts: [], goalDay: "", updatedAt: 0,
+    sessions: [], interrupts: [], goalDay: "", quests: { days: {} }, questXp: 0, updatedAt: 0,
   };
 }
 
@@ -1511,25 +2257,103 @@ function bind() {
   $("themeBtn").onclick = toggleTheme;
   $("statsJumpBtn").onclick = () => $("statsSection").scrollIntoView({ behavior: "smooth", block: "start" });
   $("settingsBtn").onclick = openSettings;
+  $("brandLevel").onclick = openLevelPage;
+  $("levelBackBtn").onclick = closeLevelPage;
+  // 点两侧留白也能退出（点内容区不关，避免与滚动手势冲突）
+  $("levelView").onclick = (e) => { if (e.target === $("levelView")) closeLevelPage(); };
   $("settingsCloseBtn").onclick = closeSettings;
   $("setSound").onchange = (e) => { store.settings.sound = e.target.checked; save(); if (e.target.checked) beep(false); };
   $("setDark").onchange = (e) => { store.settings.theme = e.target.checked ? "dark" : "light"; save(); applyTheme(store.settings.theme); };
   $("setAutoBreak").onchange = (e) => { store.settings.autoBreak = e.target.checked; save(); };
   $("setAutoFocus").onchange = (e) => { store.settings.autoFocus = e.target.checked; save(); };
   $("setWake").onchange = (e) => { store.settings.wake = e.target.checked; save(); if (!e.target.checked) releaseWake(); else if (T.status === "running") requestWake(); };
+  /* 导出数据
+     多路兜底：Blob 下载 → URL.createObjectURL 失败/被拦时退回 data: URL；
+     同时给出可见反馈，避免「点了没反应」而用户无从判断。 */
   $("exportBtn").onclick = () => {
-    const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json" });
+    let text;
+    try { text = JSON.stringify(store, null, 2); }
+    catch (e) { toast("导出失败：数据无法序列化"); return; }
+    const fname = `tomato-data-${dayKey(Date.now())}.json`;
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `tomato-data-${dayKey(Date.now())}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    a.download = fname;
+    a.rel = "noopener";
+    let url = null;
+    try {
+      const blob = new Blob([text], { type: "application/json" });
+      url = URL.createObjectURL(blob);
+      a.href = url;
+    } catch (e) {
+      // 极端情况下 Blob/URL 不可用 → data: URL 兜底
+      a.href = "data:application/json;charset=utf-8," + encodeURIComponent(text);
+    }
+    document.body.appendChild(a); // 部分浏览器要求节点在文档中才触发下载
+    try { a.click(); } catch (e) {
+      a.href = "data:application/json;charset=utf-8," + encodeURIComponent(text);
+      try { a.click(); } catch (_) {
+        document.body.removeChild(a);
+        if (url) URL.revokeObjectURL(url);
+        toast("导出失败，请检查浏览器下载权限");
+        return;
+      }
+    }
+    document.body.removeChild(a);
+    if (url) setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast(`已导出 ${fname}`, { desc: `${store.sessions.length} 条记录 · ${store.interrupts.length} 次中断` });
   };
-  $("clearBtn").onclick = () => {
-    if (!confirm("确定清空所有专注记录与中断记录吗？模式与设置会保留。")) return;
+
+  /* 清空全部记录：自绘确认弹窗（原生 confirm 可能被浏览器抑制而静默失败） */
+  $("clearBtn").onclick = async () => {
+    const ok = await askConfirm(
+      `将删除 ${store.sessions.length} 条专注记录和 ${store.interrupts.length} 次中断记录。\n模式、设置与等级经验会保留。此操作不可撤销。`,
+      { title: "清空全部记录", okText: "确认清空", danger: true }
+    );
+    if (!ok) return;
     store.sessions = []; store.interrupts = []; store.goalDay = "";
+    HIST.sel.clear();
     save(); refreshAll(); toast("记录已清空");
   };
+
+  /* 最近记录：展开 / 管理 / 全选 / 批量删除 */
+  $("historyExpandBtn").onclick = () => { HIST.expanded = !HIST.expanded; renderHistory(); };
+  $("historyManageBtn").onclick = () => setHistManage(!HIST.manage);
+  $("historyAll").onchange = (e) => {
+    const sorted = historySorted();
+    const list = HIST.expanded ? sorted : sorted.slice(0, HIST_PREVIEW);
+    if (e.target.checked) list.forEach((s) => HIST.sel.add(s.id));
+    else HIST.sel.clear();
+    renderHistory();
+  };
+  $("historyDeleteBtn").onclick = async () => {
+    const n = HIST.sel.size;
+    if (!n) return;
+    const ok = await askConfirm(`确定删除选中的 ${n} 条记录吗？此操作不可撤销。`,
+      { title: "删除记录", okText: `删除 ${n} 条`, danger: true });
+    if (!ok) return;
+    const removed = deleteHistoryIds(Array.from(HIST.sel));
+    refreshAll();
+    toast(`已删除 ${removed} 条记录`);
+  };
+
+  /* 记录详情弹窗 */
+  $("recCloseBtn").onclick = closeRecord;
+  $("recDeleteBtn").onclick = async () => {
+    const id = HIST.openId;
+    if (!id) return;
+    const ok = await askConfirm("确定删除这条记录吗？此操作不可撤销。",
+      { title: "删除这条记录", okText: "删除", danger: true });
+    if (!ok) return;
+    closeRecord();
+    const removed = deleteHistoryIds([id]);
+    refreshAll();
+    toast(removed ? "已删除 1 条记录" : "记录不存在");
+  };
+  $("recordModal").onclick = (e) => { if (e.target === $("recordModal")) closeRecord(); };
+
+  /* 通用确认弹窗 */
+  $("confirmOkBtn").onclick = () => settleConfirm(true);
+  $("confirmCancelBtn").onclick = () => settleConfirm(false);
+  $("confirmModal").onclick = (e) => { if (e.target === $("confirmModal")) settleConfirm(false); };
 
   $("tomatoViewBtn").onclick = openTomato;
   $("tvPause").onclick = (e) => {
@@ -1571,9 +2395,35 @@ function bind() {
   $("deleteModeBtn").onclick = deleteMode;
   $("modeModal").onclick = (e) => { if (e.target === $("modeModal")) closeModeModal(); };
   $("settingsModal").onclick = (e) => { if (e.target === $("settingsModal")) closeSettings(); };
+  // 回车直接保存模式；输入框里回车也算（避免用户以为没反应）
+  $("modeModal").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "SELECT")) { e.preventDefault(); saveMode(); }
+    }
+  });
+  // 输入时立刻去掉红框，反馈更跟手
+  ["modeFocusInput", "modeBreakInput", "modeNameInput"].forEach((id) => {
+    const el = $(id);
+    if (el) el.addEventListener("input", () => { el.classList.remove("field-error"); el.removeAttribute("aria-invalid"); });
+  });
 
   document.addEventListener("keydown", (e) => {
     const tag = (e.target.tagName || "").toLowerCase();
+    // 确认弹窗优先级最高，先处理它的 Escape / Enter
+    if (!$("confirmModal").classList.contains("hidden")) {
+      if (e.key === "Escape") { e.preventDefault(); settleConfirm(false); }
+      else if (e.key === "Enter") { e.preventDefault(); settleConfirm(true); }
+      return;
+    }
+    if (!$("recordModal").classList.contains("hidden")) {
+      if (e.key === "Escape") { e.preventDefault(); closeRecord(); return; }
+    }
+    // 等级页面是独立全屏页：Esc 返回，并屏蔽其余快捷键（R/S/I/F/T 会误触计时器）
+    if (lvOpen) {
+      if (e.key === "Escape") { e.preventDefault(); closeLevelPage(); }
+      return;
+    }
     if (tag === "input" || tag === "textarea") return;
     const modalOpen = !$("modeModal").classList.contains("hidden") || !$("settingsModal").classList.contains("hidden");
     if (e.key === "Escape") {
@@ -1807,7 +2657,19 @@ const RS = (() => {
     track.addEventListener("pointercancel", cancel);
     track.addEventListener("lostpointercapture", cancel);
     measure();
-    if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => measure()).observe(track);
+    let rafId = 0;
+    const schedule = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => { rafId = 0; measure(); });
+    };
+    if (typeof ResizeObserver !== "undefined") {
+      // 观察控件与父容器：双栏/单栏切换、窗口缩放都能触发重算
+      const ro = new ResizeObserver(schedule);
+      ro.observe(track);
+      if (track.parentElement) ro.observe(track.parentElement);
+    }
+    window.addEventListener("resize", schedule);
+    window.addEventListener("orientationchange", () => setTimeout(measure, 120));
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => measure());
   }
 
@@ -1819,19 +2681,31 @@ applyTheme(store.settings.theme);
 T.remaining = phaseTotal();
 bind();
 SYNC.bindUI();
+markVisit();       // 记录本次访问（独立 key，不触发 save，避免污染同步时间戳）
 refreshAll();
 RS.init((v) => { curRange = v; renderRange(); });
 KPapi.init();
 if (SYNC.on()) SYNC.pull(true); // 已开启同步 → 启动静默拉取云端
 
-/* 尺寸变化（窗口缩放/字体加载）后重新测量果冻按钮，保持挤开距离正确 */
+/* 尺寸变化（窗口缩放/字体加载/换行）后重新测量果冻按钮，保持挤开距离正确 */
 (function jrWatchSize() {
+  let rafId = 0;
   const relayout = () => {
     if (!jrChips.length || jrLastSel < 0) return;
     jrMeasure();
     jrApply(jrLastSel, true);
   };
-  if (typeof ResizeObserver !== "undefined") new ResizeObserver(relayout).observe($("modeChips"));
-  window.addEventListener("resize", relayout);
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(relayout);
+  const schedule = () => {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => { rafId = 0; relayout(); });
+  };
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(schedule);
+    ro.observe($("modeChips"));
+    const bar = document.querySelector(".mode-bar");
+    if (bar) ro.observe(bar); // 容器换行导致高度变化时也重测
+  }
+  window.addEventListener("resize", schedule);
+  window.addEventListener("orientationchange", () => setTimeout(relayout, 120));
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(schedule);
 })();

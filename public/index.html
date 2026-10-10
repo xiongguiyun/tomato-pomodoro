@@ -14,7 +14,10 @@
   <div class="brand">
     <span class="brand-logo">🍅</span>
     <span class="brand-name">番茄钟</span>
-    <span class="brand-level" id="brandLevel">Lv.1 种子</span>
+    <button type="button" class="brand-level" id="brandLevel" title="查看全部等级" aria-label="查看全部等级">
+      <span class="bl-full" id="brandLevelFull">Lv.1 种子</span>
+      <span class="bl-short" id="brandLevelShort" aria-hidden="true">Lv.1</span>
+    </button>
   </div>
   <div class="top-actions">
     <button class="icon-btn" id="themeBtn" title="切换深色 / 亮色主题 (T)" aria-label="切换主题">🌙</button>
@@ -78,6 +81,7 @@
 
     <button class="task-toggle" id="taskToggle" aria-expanded="false">
       <span class="task-toggle-arrow">▸</span> 提升等级的任务
+      <span class="task-badge" id="taskBadge"></span>
     </button>
     <div class="task-collapse" id="taskPanel">
       <div class="task-collapse-inner" id="taskPanelInner"></div>
@@ -124,7 +128,19 @@
       <div class="chart-caption" id="chartCaption">每天专注分钟数</div>
     </div>
 
-    <div class="section-subtitle">🕘 最近记录</div>
+    <div class="section-subtitle history-head">
+      <span>🕘 最近记录 <span class="history-count" id="historyCount"></span></span>
+      <span class="history-tools no-print">
+        <button type="button" class="mini-btn" id="historyExpandBtn">展开全部</button>
+        <button type="button" class="mini-btn" id="historyManageBtn">管理</button>
+      </span>
+    </div>
+    <div class="history-bar no-print hidden" id="historyBar">
+      <label class="hb-check"><input type="checkbox" id="historyAll"><span>全选</span></label>
+      <span class="hb-count" id="historySelCount">已选 0 条</span>
+      <span class="spacer"></span>
+      <button type="button" class="mini-btn danger" id="historyDeleteBtn" disabled>删除</button>
+    </div>
     <div class="history" id="history"><div class="history-empty">还没有记录，完成一次专注后这里会出现历史 🍅</div></div>
   </section>
 
@@ -141,9 +157,9 @@
     <div class="tv-tomato" id="tvTomato" title="戳一戳 🍅">
       <svg viewBox="0 0 200 200">
         <defs>
-          <radialGradient id="tvGlowGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#fff" stop-opacity=".85"/>
-            <stop offset="55%" stop-color="#ffd9d0" stop-opacity=".35"/>
+          <radialGradient id="tvGlowGrad" gradientUnits="userSpaceOnUse" cx="100" cy="118" r="72">
+            <stop offset="0%" stop-color="#fff" stop-opacity=".9"/>
+            <stop offset="55%" stop-color="#ffd9d0" stop-opacity=".38"/>
             <stop offset="100%" stop-color="#ffb3a0" stop-opacity="0"/>
           </radialGradient>
         </defs>
@@ -216,6 +232,26 @@
   </div>
 </div>
 
+<!-- ============ 记录详情弹窗 ============ -->
+<div class="modal-mask hidden" id="recordModal">
+  <div class="modal record-modal">
+    <div class="modal-title" id="recTitle">记录详情</div>
+    <div class="rec-hero" id="recHero">
+      <span class="rec-hero-ico" id="recIco">🍅</span>
+      <div class="rec-hero-text">
+        <div class="rec-hero-main" id="recMain">—</div>
+        <div class="rec-hero-sub" id="recSub">—</div>
+      </div>
+    </div>
+    <div class="rec-grid" id="recGrid"></div>
+    <div class="modal-actions">
+      <button class="btn btn-warn" id="recDeleteBtn">删除这条</button>
+      <div class="spacer"></div>
+      <button class="btn" id="recCloseBtn">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 设置弹窗 ============ -->
 <div class="modal-mask hidden" id="settingsModal">
   <div class="modal settings-modal">
@@ -284,6 +320,38 @@
 </div>
 
 <div class="toast-wrap" id="toastWrap"></div>
+
+<!-- ============ 通用确认弹窗（替代原生 confirm：原生弹窗可能被浏览器抑制而静默返回 false） ============ -->
+<div class="modal-mask hidden" id="confirmModal">
+  <div class="modal confirm-modal">
+    <div class="modal-title" id="confirmTitle">确认</div>
+    <div class="confirm-text" id="confirmText"></div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="btn" id="confirmCancelBtn">取消</button>
+      <button class="btn btn-primary" id="confirmOkBtn">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 等级页面（顶栏点等级进入，只读展示全部等级与所需经验） ============ -->
+<div class="level-view hidden" id="levelView">
+  <div class="lv-inner">
+    <header class="lv-head">
+      <button type="button" class="icon-btn lv-back" id="levelBackBtn" title="返回 (Esc)" aria-label="返回">←</button>
+      <div class="lv-head-title">🏅 等级图鉴</div>
+      <div class="lv-head-pad" aria-hidden="true"></div>
+    </header>
+
+    <div class="lv-now" id="levelNow"></div>
+
+    <div class="lv-list-head">
+      <span>全部等级</span>
+      <span class="lv-list-note" id="levelListNote"></span>
+    </div>
+    <div class="lv-list" id="levelList"></div>
+  </div>
+</div>
 
 <script src="motion.umd.js"></script>
 <script src="app.js"></script>
